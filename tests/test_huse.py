@@ -8,6 +8,9 @@ import pytest
 
 from conftest import BIN, TEST_BASH, agents_target, huse
 
+# The user's login shell. On macOS this is zsh; `huse use` opens it, and the integration runs in it.
+SHELLS = [s for s in ("bash", "zsh") if shutil.which(s)]
+
 
 def profile(home, name):
     return home / ".harness" / "profiles" / name
@@ -125,17 +128,19 @@ def test_new_fails_if_exists_or_source_missing(env):
 # ---- use (new shell) ------------------------------------------------------------------
 
 
-def test_use_opens_shell_and_restores_agents(home, ready):
+@pytest.mark.parametrize("shell", SHELLS)
+def test_use_opens_shell_and_restores_agents(home, ready, shell):
     script = 'echo "P=$HARNESS_PROFILE C=$CODEX_HOME A=$(readlink ~/.agents)"; exit 3\n'
-    r = huse("use", "tuned", env=ready, input=script)
+    r = huse("use", "tuned", env=dict(ready, SHELL=shutil.which(shell)), input=script)
     assert r.returncode == 3  # the exit code of the shell
     p = profile(home, "tuned")
     assert f"P=tuned C={p}/codex A={p}/agents" in r.stdout
     assert agents_target(home) == system_agents(home)
 
 
-def test_use_in_a_huse_shell_is_refused(home, ready):
-    r = huse("use", "tuned", env=ready, input="huse use lean; echo rc=$?; exit\n")
+@pytest.mark.parametrize("shell", SHELLS)
+def test_use_in_a_huse_shell_is_refused(home, ready, shell):
+    r = huse("use", "tuned", env=dict(ready, SHELL=shutil.which(shell)), input="huse use lean; echo rc=$?; exit\n")
     assert "rc=1" in r.stdout
     assert "already a huse shell" in r.stderr
 
@@ -217,9 +222,6 @@ def test_env_off_unsets_and_never_sets_defaults(ready):
     r = huse("__env", "off", env=ready, check=True)
     assert r.stdout.startswith("unset ")
     assert "CLAUDE_CONFIG_DIR" in r.stdout and "export" not in r.stdout
-
-
-SHELLS = [s for s in ("bash", "zsh") if shutil.which(s)]
 
 
 @pytest.mark.parametrize("shell", SHELLS)

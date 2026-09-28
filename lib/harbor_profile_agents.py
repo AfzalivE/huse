@@ -38,7 +38,9 @@ def _file_from_env(agent, var: str) -> Path | None:
     path = Path(value).expanduser()
     if not path.is_file():
         raise RuntimeError(f"{var} points to a missing file: {path}")
-    return path
+    # Upload the real file. Harbor uploads with `docker cp`, which copies a symlink as a
+    # symlink, and its target does not exist in the container.
+    return path.resolve()
 
 
 class ClaudeCodeProfile(ClaudeCode):

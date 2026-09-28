@@ -71,6 +71,7 @@ Keep these true in every change.
 - The auth variables `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_FORCE_OAUTH`, and `CODEX_AUTH_JSON_PATH`.
 - The trial `result.json` fields: `task_name`, `verifier_result.rewards`, `exception_info`, `agent_result`, `agent_execution`, `agent_info`, `step_results`.
 - The resume command: `harbor jobs resume -p <job>`.
+- Uploads: the Docker environment uploads with `docker cp`, which copies a symlink as a symlink. Resolve symlinks before an upload (`Path.resolve()`). Harbor resolves top-level skill folders itself, but not symlinks inside a skill.
 
 To read the installed source: `python3 -c "import harbor, os; print(os.path.dirname(harbor.__file__))"`.
 
@@ -100,6 +101,7 @@ Rules:
 - Add or change a test for each change in behavior. For a bug fix, first write a test that fails.
 - Tests must never use the real home folder. Use the `home` and `env` fixtures.
 - Test the scripts through their CLI, the way a user runs them. Do not source them.
+- **Shells:** the scripts are bash scripts, so they run with bash even when the user's login shell is zsh (the macOS default). The user's shell matters in two places: the new shell of `huse use` (`$SHELL`) and the `huse init` function. Test both with bash and zsh (`SHELLS` in `tests/test_huse.py`).
 - **Bash 3.2:** `make test-bash32` runs all tests with `/bin/bash` on macOS, and CI runs it. On Linux, build Bash 3.2 from Apple's source (`apple-oss-distributions/bash` on GitHub) and run `make test-bash32 BASH32=/path/to/bash`.
 - **Harbor:** after a Harbor upgrade, run `make test-harbor` with the new version before you change the pin in `pyproject.toml` and in the CI workflow.
 - **Versions:** to change the version, update `pyproject.toml`, `HUSE_VERSION` in `bin/huse`, `HEVAL_VERSION` in `bin/heval`, and `CHANGELOG.md`. `tests/test_repo.py` checks this.

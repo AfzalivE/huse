@@ -8,6 +8,7 @@ import asyncio
 import os
 import shutil
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -88,6 +89,28 @@ def test_pi_gets_login_and_agents_md(tmp_path, files):
     assert [t for _, t in uploads(calls)] == ["/tmp/harbor-profile-auth.json", "/tmp/harbor-profile-AGENTS.md"]
     assert '"$HOME/.pi/agent/auth.json"' in final_paths(calls)[0]
     assert '"$HOME/.pi/agent/AGENTS.md"' in final_paths(calls)[1]
+
+
+def test_symlinked_files_are_uploaded_as_their_real_file(tmp_path, files):
+    # docker cp copies a symlink as a symlink. In the container, the link then points to a
+    # path on the host that does not exist there. Thus the upload must use the real file.
+    real_instr, real_auth = files["HARNESS_INSTRUCTIONS"], files["PI_AUTH_JSON_PATH"]
+    (tmp_path / "link-AGENTS.md").symlink_to(real_instr)
+    (tmp_path / "link-auth.json").symlink_to(real_auth)
+    links = {
+        "HARNESS_INSTRUCTIONS": str(tmp_path / "link-AGENTS.md"),
+        "PI_AUTH_JSON_PATH": str(tmp_path / "link-auth.json"),
+    }
+    calls = run_setup(hpa.PiProfile, Pi, "openai-codex/x", tmp_path, links)
+    sources = [src for src, _ in uploads(calls)]
+    assert sources == [str(Path(real_auth).resolve()), str(Path(real_instr).resolve())]
+
+
+def test_dangling_symlink_is_an_error(tmp_path):
+    (tmp_path / "dangling.md").symlink_to(tmp_path / "nothing-here.md")
+    with pytest.raises(RuntimeError, match="missing file"):
+        extra_env = {"HARNESS_INSTRUCTIONS": str(tmp_path / "dangling.md")}
+        run_setup(hpa.CodexProfile, Codex, "openai/x", tmp_path, extra_env)
 
 
 def test_nothing_happens_without_variables(tmp_path):
