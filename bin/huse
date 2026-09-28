@@ -13,6 +13,7 @@
 # With `eval "$(huse init)"` in ~/.zshrc or ~/.bashrc, `huse use` and `huse off`
 # change the current shell instead.
 
+HUSE_VERSION="0.1.0"
 HARNESS_ROOT="${HARNESS_ROOT:-$HOME/.harness}"
 AGENTS_LINK="$HOME/.agents"
 AGENTS_SYSTEM="$HARNESS_ROOT/agents.system"
@@ -28,6 +29,7 @@ usage:
   huse ls                                       list profiles
   huse status                                   show what is active
   huse init                                     print shell integration: eval "$(huse init)"
+  huse --version                                print the version
 
 <profile> is a profile name that you chose with `huse new`. "system" means your normal setup.
 EOF
@@ -77,7 +79,7 @@ _huse_agents_name() {
 _huse_agents_target() { readlink "$AGENTS_LINK" 2>/dev/null || true; }
 
 _huse_is_setup() {
-  [ -L "$AGENTS_LINK" ] && [ -e "$AGENTS_SYSTEM" -o -L "$AGENTS_SYSTEM" ]
+  [ -L "$AGENTS_LINK" ] && { [ -e "$AGENTS_SYSTEM" ] || [ -L "$AGENTS_SYSTEM" ]; }
 }
 
 _huse_require_setup() {
@@ -288,9 +290,11 @@ _huse_run() {
 
 _huse_list() {
   [ -d "$HARNESS_ROOT/profiles" ] || { echo "huse: no profiles yet" >&2; return 0; }
-  local agents_t mark note
+  local agents_t mark note d p
   agents_t="$(_huse_agents_target)"
-  ls -1 "$HARNESS_ROOT/profiles" | while read -r p; do
+  for d in "$HARNESS_ROOT/profiles"/*/; do
+    [ -d "$d" ] || continue
+    p="${d%/}"; p="${p##*/}"
     mark="  "; [ "$p" = "${HARNESS_PROFILE:-}" ] && mark="* "
     note="";   [ "$agents_t" = "$HARNESS_ROOT/profiles/$p/agents" ] && note="   (~/.agents)"
     echo "$mark$p$note"
@@ -306,9 +310,11 @@ _huse_status() {
   fi
   if _huse_is_setup; then
     agents_p="$(_huse_agents_name "$(_huse_agents_target)")"
+    # shellcheck disable=SC2088  # a literal ~ is intended in this label
     echo "~/.agents profile:    $agents_p   (-> $(_huse_agents_target))"
   else
     agents_p=""
+    # shellcheck disable=SC2088
     echo "~/.agents profile:    not managed yet (run: huse setup)"
   fi
   echo "CLAUDE_CONFIG_DIR   = ${CLAUDE_CONFIG_DIR:-(unset, uses ~/.claude)}"
@@ -332,5 +338,6 @@ case "$cmd" in
   init)           _huse_init ;;
   __env)          _huse_env "$@" ;;
   -h|--help|help) _huse_help ;;
+  -V|--version|version) echo "huse $HUSE_VERSION" ;;
   *)              _huse_help; exit 1 ;;
 esac

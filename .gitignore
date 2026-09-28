@@ -4,5 +4,10 @@ eval.env
 !eval.env.example
 jobs/
 *.excluded/
+
+# Development
 __pycache__/
 .DS_Store
+.pytest_cache/
+.ruff_cache/
+.venv/

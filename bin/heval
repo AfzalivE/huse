@@ -7,11 +7,14 @@
 #   heval resume <job>                   run again the trials that stopped on limits or errors
 #   heval jobs                           list jobs
 #   heval view                           open the Harbor results viewer
+#   heval --version                      print the version
 #
-# Code: this repo. Settings: eval.conf in this repo.
-# Data (not in the repo): profiles, logins (eval.env), and jobs in $HARNESS_ROOT (default ~/.harness).
+# Code and settings (eval.conf): this repo.
+# heval data (logins in eval.env, jobs): $HEVAL_HOME (default ~/.heval).
+# Profiles: made by huse in $HARNESS_ROOT (default ~/.harness). heval only reads them.
 # Docs: docs/heval.md in this repo.
 set -euo pipefail
+HEVAL_VERSION="0.1.0"
 
 # Find the repo, also when bin/heval is called through a symlink.
 _src="${BASH_SOURCE[0]}"
@@ -22,19 +25,43 @@ done
 HEVAL_ROOT="$(cd "$(dirname "$_src")/.." && pwd -P)"
 HEVAL_LIB="$HEVAL_ROOT/lib"
 
-HARNESS_ROOT="${HARNESS_ROOT:-$HOME/.harness}"
+HARNESS_ROOT="${HARNESS_ROOT:-$HOME/.harness}"   # huse profiles: heval only reads here
+HEVAL_HOME="${HEVAL_HOME:-$HOME/.heval}"         # heval data: logins and jobs
 HEVAL_CONF="${HEVAL_CONF:-$HEVAL_ROOT/eval.conf}"
-HEVAL_ENV="${HEVAL_ENV:-$HARNESS_ROOT/eval.env}"
-JOBS_DIR="${JOBS_DIR:-$HARNESS_ROOT/jobs}"
+HEVAL_ENV="${HEVAL_ENV:-$HEVAL_HOME/eval.env}"
+JOBS_DIR="${JOBS_DIR:-$HEVAL_HOME/jobs}"
+
+# The comment block at the top of this file is the usage text.
+usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$_src"; }
+
+# These work without eval.conf.
+case "${1:-}" in
+  -V|--version|version) echo "heval $HEVAL_VERSION"; exit 0 ;;
+  -h|--help|help) usage; exit 0 ;;
+esac
 
 [ -f "$HEVAL_CONF" ] || { echo "heval: missing $HEVAL_CONF" >&2; exit 1; }
+# shellcheck source=SCRIPTDIR/../eval.conf
 . "$HEVAL_CONF"
+# Earlier versions of heval kept their files in $HARNESS_ROOT.
+_old=""
+for _f in eval.env eval-codex eval-pi jobs; do
+  [ -e "$HARNESS_ROOT/$_f" ] && _old="$_old $HARNESS_ROOT/$_f"
+done
+if [ -n "$_old" ]; then
+  echo "heval: note: heval now keeps its files in $HEVAL_HOME. Move these there:$_old" >&2
+fi
+
 if [ -f "$HEVAL_ENV" ]; then
+  # shellcheck disable=SC2012  # ls -l is the portable way to read the mode (BSD and GNU)
   case "$(ls -l "$HEVAL_ENV" | cut -c5-10)" in
     ------) ;;
     *) echo "heval: WARNING: other users can read $HEVAL_ENV. Run: chmod 600 $HEVAL_ENV" >&2 ;;
   esac
-  set -a; . "$HEVAL_ENV"; set +a
+  set -a
+  # shellcheck source=/dev/null
+  . "$HEVAL_ENV"
+  set +a
 fi
 export PYTHONPATH="$HEVAL_LIB${PYTHONPATH:+:$PYTHONPATH}"
 
@@ -55,6 +82,12 @@ part_dir() {
     [ -d "$HARNESS_ROOT/profiles/$p" ] || die "no profile '$p' (see: huse ls)"
     echo "$HARNESS_ROOT/profiles/$p/$part"
   fi
+}
+
+need_dataset() {
+  case "${DATASET:-}" in
+    *"<"*|"") die "set DATASET in $HEVAL_CONF to a real name and version (see: harbor datasets list)" ;;
+  esac
 }
 
 first_file() { local f; for f in "$@"; do [ -f "$f" ] && { echo "$f"; return 0; }; done; return 0; }
@@ -80,8 +113,8 @@ cmd_run() {
             instr="$(first_file "$own/AGENTS.md" "$agents/AGENTS.md")" ;;
     *) die "harness must be claude, codex, or pi" ;;
   esac
-  case "$model" in *"<"*|"") die "set the ${h} model in eval.conf" ;; esac
-  case "$DATASET" in *"<"*|"") die "set DATASET in eval.conf" ;; esac
+  need_dataset
+  case "$model" in *"<"*|"") die "set the ${h} model in $HEVAL_CONF" ;; esac
 
   local name; name="$(suite_tag)__${h}__${p}__$(date +%Y%m%d-%H%M%S)"
   local args=(-d "$DATASET" -k "$ATTEMPTS" -n "$CONCURRENCY" -e "$ENV_TYPE"
@@ -123,6 +156,7 @@ job_dirs() {  # <harness> <profile>
 
 cmd_compare() {
   [ $# -eq 3 ] || die "usage: heval compare <claude|codex|pi> <base-profile> <new-profile>"
+  need_dataset
   local base=() new=() d
   while IFS= read -r d; do base+=("$d"); done < <(job_dirs "$1" "$2")
   while IFS= read -r d; do new+=("$d"); done < <(job_dirs "$1" "$3")
@@ -142,6 +176,7 @@ cmd_resume() {
 }
 
 cmd_check() {
+  need_dataset
   local args=(-d "$DATASET" -a oracle -e "$ENV_TYPE" -n "$CONCURRENCY" -o "$JOBS_DIR"
               --job-name "$(suite_tag)__oracle__$(date +%Y%m%d-%H%M%S)" -y)
   [ -n "${N_TASKS:-}" ] && args+=(-l "$N_TASKS")
@@ -154,7 +189,10 @@ case "${1:-}" in
   compare) shift; cmd_compare "$@" ;;
   resume)  shift; cmd_resume "$@" ;;
   check)   shift; cmd_check "$@" ;;
-  jobs)    ls -1 "$JOBS_DIR" 2>/dev/null | grep -v '\.excluded$' || true ;;
+  jobs)    for d in "$JOBS_DIR"/*/; do
+             [ -d "$d" ] || continue; d="${d%/}"
+             case "$d" in *.excluded) ;; *) echo "${d##*/}" ;; esac
+           done ;;
   view)    shift; exec harbor view "$JOBS_DIR" "$@" ;;
-  *)       sed -n '2,13p' "$_src" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *)       usage >&2; exit 1 ;;
 esac

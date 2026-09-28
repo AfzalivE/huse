@@ -5,13 +5,59 @@ Two tools for agent harness profiles (Claude Code, Codex, pi):
 - `huse` switches between harness profiles on your machine.
 - `heval` runs Harbor benchmark suites against those profiles and compares them. See [docs/heval.md](docs/heval.md).
 
-The repo holds code and settings only. Your data stays in `~/.harness`:
+The repo holds code, settings, and docs. Your data stays outside the repo: `huse` uses `~/.harness`, and `heval` uses `~/.heval`. See "Folders" below.
 
-| In this repo (commit it) | In `~/.harness` (never commit it) |
-| --- | --- |
-| `bin/huse` | `profiles/` (your profiles) |
-| `bin/heval`, `lib/`, `eval.conf`, `eval.env.example` | `agents.system/` (your original `~/.agents`) |
-| `docs/heval.md` | heval logins and results (see [docs/heval.md](docs/heval.md)) |
+## Folders
+
+### ~/.harness (huse data, never commit it)
+
+`huse` makes these folders. To use another place, set `HARNESS_ROOT`.
+
+```
+~/.harness/
+├── agents.system/                  your original ~/.agents (made by `huse setup`)
+├── profiles/
+│   ├── tuned/                      one folder for each profile (made by `huse new`)
+│   │   ├── claude/                 used as CLAUDE_CONFIG_DIR
+│   │   ├── codex/                  used as CODEX_HOME
+│   │   ├── pi/                     used as PI_CODING_AGENT_DIR
+│   │   └── agents/                 used as ~/.agents
+│   └── lean/
+│       └── ...
+```
+
+`tuned` and `lean` are example profile names. If your original `~/.agents` was a symlink (for example, into a dotfiles repo), `agents.system` is a symlink to the same folder.
+
+`~/.agents` is a symlink that `huse` points at one of these folders:
+
+```
+~/.agents -> ~/.harness/agents.system          your normal setup
+~/.agents -> ~/.harness/profiles/tuned/agents  while you use the profile "tuned"
+```
+
+### ~/.heval (heval data, never commit it)
+
+`heval` keeps its logins and results in `~/.heval`. It only reads the profiles in `~/.harness`. See [docs/heval.md](docs/heval.md#files) for the layout.
+
+### The repo (code and settings, commit it)
+
+```
+harness-tools/
+├── bin/
+│   ├── huse                        the profile tool
+│   └── heval                       the eval tool
+├── lib/                            Python files that heval uses with Harbor
+├── tests/                          tests for both tools
+├── docs/heval.md                   heval docs
+├── .github/workflows/ci.yml        CI: lint and tests on Linux and macOS
+├── eval.conf                       heval settings: suite, models, versions
+├── eval.env.example                template for ~/.heval/eval.env
+├── Makefile                        make check, make test, make lint
+├── pyproject.toml                  version, dev tools, test settings
+├── AGENTS.md                       instructions for coding agents
+├── CHANGELOG.md
+└── README.md
+```
 
 ## Install
 
@@ -154,6 +200,18 @@ To show the active profile in your zsh prompt:
 setopt PROMPT_SUBST
 RPROMPT='${HARNESS_PROFILE:+[$HARNESS_PROFILE]}'
 ```
+
+## Development
+
+```sh
+pip install --group dev    # pip 25.1 or later. Or: uv sync --group dev
+make check                 # shellcheck, ruff, and all tests
+```
+
+- The tests run in a temporary home folder. They do not change your `~/.agents`, `~/.harness`, or `~/.heval`.
+- The Harbor tests need Harbor: `pip install --group harbor`, then `make test-harbor`. Without Harbor, they skip.
+- On macOS, `make test-bash32` runs the tests with `/bin/bash` (Bash 3.2).
+- `AGENTS.md` lists the rules that each change must keep.
 
 ## Environment variables
 

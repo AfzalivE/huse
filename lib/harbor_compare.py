@@ -8,6 +8,7 @@ A trial counts only when the verifier gave a reward. Trials that stopped on a us
 limit, a rate limit, an API outage, or a setup error do not count. They are listed so
 that you can run them again.
 """
+
 import argparse
 import json
 import random
@@ -19,12 +20,22 @@ from pathlib import Path
 from statistics import median
 
 # Errors that are not the agent's fault. These trials are excluded and can be run again.
-INFRA_TYPES = {"ApiUsageLimitError", "ApiRateLimitError", "ApiOverloadedError",
-               "ApiInternalServerError", "ApiConnectionClosedError", "AgentAuthenticationError",
-               "CancelledError", "ModelNotFoundError"}
+INFRA_TYPES = {
+    "ApiUsageLimitError",
+    "ApiRateLimitError",
+    "ApiOverloadedError",
+    "ApiInternalServerError",
+    "ApiConnectionClosedError",
+    "AgentAuthenticationError",
+    "CancelledError",
+    "ModelNotFoundError",
+}
 # Subscription limit messages that Harbor can report only as a non-zero exit.
-LIMIT_RE = re.compile(r"usage limit|limit reached|hit your (usage )?limit|rate.?limit|quota exceeded|"
-                      r"out of extra usage|credit balance|resets? (at|in) \d", re.I)
+LIMIT_RE = re.compile(
+    r"usage limit|limit reached|hit your (usage )?limit|rate.?limit|quota exceeded|"
+    r"out of extra usage|credit balance|resets? (at|in) \d",
+    re.I,
+)
 
 
 def load_trial(tdir: Path):
@@ -58,11 +69,15 @@ def load_trial(tdir: Path):
     ae = r.get("agent_execution") or {}
     info = r.get("agent_info") or {}
     return {
-        "dir": tdir, "task": r.get("task_name"), "status": status, "reason": reason,
-        "reward": reward, "cost": ar.get("cost_usd"), "tok_in": ar.get("n_input_tokens"),
+        "dir": tdir,
+        "task": r.get("task_name"),
+        "status": status,
+        "reason": reason,
+        "reward": reward,
+        "cost": ar.get("cost_usd"),
+        "tok_in": ar.get("n_input_tokens"),
         "seconds": _seconds(ae.get("started_at"), ae.get("finished_at")),
-        "agent": f"{info.get('name')} {info.get('version')} "
-                 f"{(info.get('model_info') or {}).get('name')}",
+        "agent": f"{info.get('name')} {info.get('version')} {(info.get('model_info') or {}).get('name')}",
     }
 
 
@@ -138,15 +153,19 @@ def compare(a):
         vals = [rate[(s, t)] for t in tasks]
         lo, hi = boot_ci(vals)
         rs = [x for t in tasks for x in by[s][t]]
-        print(f"  {s:<6}{100 * sum(vals) / len(vals):>7.1f}%{f'[{100 * lo:.0f}, {100 * hi:.0f}]':>16}"
-              f"{fmt(med([x['cost'] for x in rs]), 'usd'):>10}{fmt(med([x['seconds'] for x in rs]), 's'):>7}"
-              f"{fmt(med([x['tok_in'] for x in rs]), 'tok'):>8}{len(rs):>6}  {label}")
+        print(
+            f"  {s:<6}{100 * sum(vals) / len(vals):>7.1f}%{f'[{100 * lo:.0f}, {100 * hi:.0f}]':>16}"
+            f"{fmt(med([x['cost'] for x in rs]), 'usd'):>10}{fmt(med([x['seconds'] for x in rs]), 's'):>7}"
+            f"{fmt(med([x['tok_in'] for x in rs]), 'tok'):>8}{len(rs):>6}  {label}"
+        )
 
     diffs = [rate[("new", t)] - rate[("base", t)] for t in tasks]
     lo, hi = boot_ci(diffs)
     verdict = "BETTER" if lo > 0 else "WORSE" if hi < 0 else "no clear change (inside the noise)"
-    print(f"\n  new - base: {100 * sum(diffs) / len(diffs):+.1f} pts, "
-          f"95% CI [{100 * lo:+.1f}, {100 * hi:+.1f}] -> {verdict}")
+    print(
+        f"\n  new - base: {100 * sum(diffs) / len(diffs):+.1f} pts, "
+        f"95% CI [{100 * lo:+.1f}, {100 * hi:+.1f}] -> {verdict}"
+    )
 
     agents = {s: sorted({x["agent"] for t in tasks for x in by[s][t]}) for s in by}
     if agents["base"] != agents["new"]:
@@ -166,8 +185,7 @@ def compare(a):
         kinds = {}
         for t in excluded:
             kinds[t["reason"]] = kinds.get(t["reason"], 0) + 1
-        print(f"\n{len(excluded)} trials are not counted: "
-              + ", ".join(f"{k} x{v}" for k, v in sorted(kinds.items())))
+        print(f"\n{len(excluded)} trials are not counted: " + ", ".join(f"{k} x{v}" for k, v in sorted(kinds.items())))
         print("To run them again: heval resume <job folder>  (or --prune, then harbor jobs resume)")
 
 

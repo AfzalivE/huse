@@ -27,8 +27,7 @@ async def _put_file(agent, environment: BaseEnvironment, src: Path, remote_dir: 
         await agent.exec_as_root(environment, command=f"chown {user} {tmp}")
     await agent.exec_as_agent(
         environment,
-        command=(f'mkdir -p "{remote_dir}" && mv {tmp} "{remote_dir}/{name}" && '
-                 f'chmod 600 "{remote_dir}/{name}"'),
+        command=(f'mkdir -p "{remote_dir}" && mv {tmp} "{remote_dir}/{name}" && chmod 600 "{remote_dir}/{name}"'),
     )
 
 

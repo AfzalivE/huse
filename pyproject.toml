@@ -1,0 +1,30 @@
+[project]
+name = "harness-tools"
+version = "0.1.0"
+description = "huse and heval: switch and benchmark agent harness profiles (Claude Code, Codex, pi)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6", "shellcheck-py>=0.10"]
+# lib/harbor_profile_agents.py uses Harbor internals. Change this pin only after `make test-harbor` passes.
+harbor = ["harbor==0.23.0"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = ["harbor: needs the harbor package (pip install harbor==0.23.0)"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["conftest", "harbor_compare", "harbor_profile_agents"]

@@ -17,31 +17,44 @@ You make the profiles with `huse`. See the [main README](../README.md#use-huse).
 
 ## Files
 
+`heval` keeps its data in `~/.heval`. It only reads the huse profiles in `~/.harness` (see [Folders](../README.md#folders) in the main README). To use another place for the heval data, set `HEVAL_HOME`.
+
+```
+~/.heval/
+├── eval.env                  your logins (chmod 600, never commit it)
+├── logins/
+│   ├── codex/                a separate Codex login for evals
+│   └── pi/                   a separate pi login for evals
+└── jobs/                     Harbor results
+    ├── <suite>__oracle__<time>/                         from `heval check`
+    ├── <suite>__<harness>__<profile>__<time>/           from `heval run`
+    └── <suite>__<harness>__<profile>__<time>.excluded/  trials that `heval resume` moved out
+```
+
+In the repo:
+
 | File | Purpose |
 | --- | --- |
-| `eval.conf` (repo) | Suite, number of tasks, attempts, models, and versions. Commit it. |
-| `eval.env.example` (repo) | Template for your logins. |
-| `~/.harness/eval.env` | Your logins. Never commit it. |
-| `~/.harness/eval-codex/`, `~/.harness/eval-pi/` | Separate Codex and pi logins for evals. |
-| `~/.harness/jobs/` | Harbor results. |
+| `eval.conf` | Suite, number of tasks, attempts, models, and versions. Commit it. |
+| `eval.env.example` | Template for `~/.heval/eval.env`. |
 
 ## One-time setup
 
 1. Install Docker and start it. Install Harbor: `uv tool install harbor`.
-2. Edit `eval.conf` in the repo. Set `DATASET` with a pinned version (see `harbor datasets list`). Set one model for each harness, and pin the harness versions. Commit the file.
+2. Edit `eval.conf` in the repo. `DATASET` is set to Terminal-Bench 4.0.0. To use a newer tag or another suite, change it (see `harbor datasets list`), and always keep a pinned version. Set one model for each harness, and pin the harness versions. Commit the file.
 3. Make the eval logins:
 
    ```sh
    claude setup-token                                   # copy the token
 
-   mkdir -p ~/.harness/eval-codex
-   echo 'cli_auth_credentials_store = "file"' > ~/.harness/eval-codex/config.toml
-   CODEX_HOME=~/.harness/eval-codex codex login
+   mkdir -p ~/.heval/logins/codex ~/.heval/logins/pi
+   echo 'cli_auth_credentials_store = "file"' > ~/.heval/logins/codex/config.toml
+   CODEX_HOME=~/.heval/logins/codex codex login
 
-   PI_CODING_AGENT_DIR=~/.harness/eval-pi pi           # type /login, select ChatGPT Plus/Pro (Codex)
+   PI_CODING_AGENT_DIR=~/.heval/logins/pi pi           # type /login, select ChatGPT Plus/Pro (Codex)
    ```
 
-4. Copy `eval.env.example` from the repo to `~/.harness/eval.env`. Paste the Claude token. Run `chmod 600 ~/.harness/eval.env`.
+4. Copy `eval.env.example` from the repo to `~/.heval/eval.env`. Paste the Claude token. Run `chmod 600 ~/.heval/eval.env`.
 5. Make a frozen baseline: `huse new base --from system` (see [Create a profile](../README.md#create-a-profile)). Your daily setup changes over time, so do not use `system` as the baseline.
 6. Run `heval check`. The oracle agent must pass every task. Add the names of tasks that fail to `EXCLUDE_TASKS` in `eval.conf`.
 
@@ -79,7 +92,8 @@ Do not edit a profile after you run it. `heval compare` uses all jobs with the s
 
 | Variable | Default |
 | --- | --- |
-| `HARNESS_ROOT` | `~/.harness` |
+| `HEVAL_HOME` | `~/.heval` |
 | `HEVAL_CONF` | `<repo>/eval.conf` |
-| `HEVAL_ENV` | `$HARNESS_ROOT/eval.env` |
-| `JOBS_DIR` | `$HARNESS_ROOT/jobs` |
+| `HEVAL_ENV` | `$HEVAL_HOME/eval.env` |
+| `JOBS_DIR` | `$HEVAL_HOME/jobs` |
+| `HARNESS_ROOT` | `~/.harness` (where `heval` reads the huse profiles) |
