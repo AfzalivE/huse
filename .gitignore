@@ -1,0 +1,8 @@
+# Logins and results stay in ~/.harness. These lines stop mistakes.
+eval.env
+*.env
+!eval.env.example
+jobs/
+*.excluded/
+__pycache__/
+.DS_Store

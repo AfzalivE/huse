@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# heval - run Harbor benchmark suites against harness profiles made with huse.
+#
+#   heval check                          run the oracle agent: every task must pass here
+#   heval run <claude|codex|pi> <profile> [extra harbor args, e.g. --dry-run]
+#   heval compare <claude|codex|pi> <base-profile> <new-profile>
+#   heval resume <job>                   run again the trials that stopped on limits or errors
+#   heval jobs                           list jobs
+#   heval view                           open the Harbor results viewer
+#
+# Code: this repo. Settings: eval.conf in this repo.
+# Data (not in the repo): profiles, logins (eval.env), and jobs in $HARNESS_ROOT (default ~/.harness).
+# Docs: docs/heval.md in this repo.
+set -euo pipefail
+
+# Find the repo, also when bin/heval is called through a symlink.
+_src="${BASH_SOURCE[0]}"
+while [ -L "$_src" ]; do
+  _t="$(readlink "$_src")"
+  case "$_t" in /*) _src="$_t" ;; *) _src="$(dirname "$_src")/$_t" ;; esac
+done
+HEVAL_ROOT="$(cd "$(dirname "$_src")/.." && pwd -P)"
+HEVAL_LIB="$HEVAL_ROOT/lib"
+
+HARNESS_ROOT="${HARNESS_ROOT:-$HOME/.harness}"
+HEVAL_CONF="${HEVAL_CONF:-$HEVAL_ROOT/eval.conf}"
+HEVAL_ENV="${HEVAL_ENV:-$HARNESS_ROOT/eval.env}"
+JOBS_DIR="${JOBS_DIR:-$HARNESS_ROOT/jobs}"
+
+[ -f "$HEVAL_CONF" ] || { echo "heval: missing $HEVAL_CONF" >&2; exit 1; }
+. "$HEVAL_CONF"
+if [ -f "$HEVAL_ENV" ]; then
+  case "$(ls -l "$HEVAL_ENV" | cut -c5-10)" in
+    ------) ;;
+    *) echo "heval: WARNING: other users can read $HEVAL_ENV. Run: chmod 600 $HEVAL_ENV" >&2 ;;
+  esac
+  set -a; . "$HEVAL_ENV"; set +a
+fi
+export PYTHONPATH="$HEVAL_LIB${PYTHONPATH:+:$PYTHONPATH}"
+
+die() { echo "heval: $*" >&2; exit 1; }
+
+# Directory of one part (claude|codex|pi|agents) of a profile.
+part_dir() {
+  local p="$1" part="$2"
+  if [ "$p" = system ]; then
+    case "$part" in
+      claude) echo "$HOME/.claude" ;;
+      codex)  echo "$HOME/.codex" ;;
+      pi)     echo "$HOME/.pi/agent" ;;
+      agents) if [ -d "$HARNESS_ROOT/agents.system" ]; then echo "$HARNESS_ROOT/agents.system"
+              else echo "$HOME/.agents"; fi ;;
+    esac
+  else
+    [ -d "$HARNESS_ROOT/profiles/$p" ] || die "no profile '$p' (see: huse ls)"
+    echo "$HARNESS_ROOT/profiles/$p/$part"
+  fi
+}
+
+first_file() { local f; for f in "$@"; do [ -f "$f" ] && { echo "$f"; return 0; }; done; return 0; }
+has_skills() { compgen -G "$1/*/SKILL.md" >/dev/null 2>&1; }
+real_dir() { (cd "$1" 2>/dev/null && pwd -P); }
+suite_tag() { printf '%s' "$DATASET" | tr '/@:' '---' | tr -cd 'A-Za-z0-9._-'; }
+
+cmd_run() {
+  [ $# -ge 2 ] || die "usage: heval run <claude|codex|pi> <profile> [harbor args...]"
+  local h="$1" p="$2"; shift 2
+  local own agents agent model instr cfg=""
+  own="$(part_dir "$p" "$h")"
+  agents="$(part_dir "$p" agents)"
+  local version=""
+  case "$h" in
+    claude) agent=ClaudeCodeProfile; model="$CLAUDE_MODEL"; version="${CLAUDE_VERSION:-}"
+            instr="$(first_file "$own/CLAUDE.md" "$agents/AGENTS.md")"
+            cfg="$(first_file "$own/eval-settings.json")" ;;
+    codex)  agent=CodexProfile; model="$CODEX_MODEL"; version="${CODEX_VERSION:-}"
+            instr="$(first_file "$own/AGENTS.md" "$agents/AGENTS.md")"
+            cfg="$(first_file "$own/eval-config.toml")" ;;
+    pi)     agent=PiProfile; model="$PI_MODEL"; version="${PI_VERSION:-}"
+            instr="$(first_file "$own/AGENTS.md" "$agents/AGENTS.md")" ;;
+    *) die "harness must be claude, codex, or pi" ;;
+  esac
+  case "$model" in *"<"*|"") die "set the ${h} model in eval.conf" ;; esac
+  case "$DATASET" in *"<"*|"") die "set DATASET in eval.conf" ;; esac
+
+  local name; name="$(suite_tag)__${h}__${p}__$(date +%Y%m%d-%H%M%S)"
+  local args=(-d "$DATASET" -k "$ATTEMPTS" -n "$CONCURRENCY" -e "$ENV_TYPE"
+              -a "harbor_profile_agents:$agent" -m "$model"
+              -o "$JOBS_DIR" --job-name "$name" -y)
+  [ -n "${N_TASKS:-}" ] && args+=(-l "$N_TASKS")
+  local x; for x in "${EXCLUDE_TASKS[@]+"${EXCLUDE_TASKS[@]}"}"; do args+=(-x "$x"); done
+
+  local skills=()
+  has_skills "$agents/skills" && skills+=("$agents/skills")
+  if has_skills "$own/skills" && [ "$(real_dir "$own/skills")" != "$(real_dir "$agents/skills")" ]; then
+    skills+=("$own/skills")
+  fi
+  local s; for s in "${skills[@]+"${skills[@]}"}"; do args+=(--skill "$s"); done
+  [ -n "$cfg" ] && args+=(--ak "config=$cfg")
+  [ -n "$version" ] && args+=(--ak "version=$version")
+  [ -n "$instr" ] && args+=(--ae "HARNESS_INSTRUCTIONS=$instr")
+
+  echo "heval: job          $name"
+  echo "heval: instructions ${instr:-(none)}"
+  echo "heval: skills       ${skills[*]:-(none)}"
+  echo "heval: config       ${cfg:-(none; add eval-settings.json or eval-config.toml to the profile)}"
+  echo "heval: version      ${version:-(latest; pin it in eval.conf)}"
+  if [ -n "$instr" ] && grep -q '^@' "$instr"; then
+    echo "heval: WARNING: $instr has @ imports. They do not work in the container." >&2
+  fi
+  mkdir -p "$JOBS_DIR"
+  exec harbor run "${args[@]}" "$@"
+}
+
+job_dirs() {  # <harness> <profile>
+  local d
+  shopt -s nullglob
+  for d in "$JOBS_DIR/$(suite_tag)__$1__$2__"*; do
+    [ -d "$d" ] && [ "${d%.excluded}" = "$d" ] && echo "$d"
+  done
+  shopt -u nullglob
+}
+
+cmd_compare() {
+  [ $# -eq 3 ] || die "usage: heval compare <claude|codex|pi> <base-profile> <new-profile>"
+  local base=() new=() d
+  while IFS= read -r d; do base+=("$d"); done < <(job_dirs "$1" "$2")
+  while IFS= read -r d; do new+=("$d"); done < <(job_dirs "$1" "$3")
+  [ ${#base[@]} -gt 0 ] || die "no $1 jobs for profile '$2' on $DATASET"
+  [ ${#new[@]} -gt 0 ] || die "no $1 jobs for profile '$3' on $DATASET"
+  python3 "$HEVAL_LIB/harbor_compare.py" --base "${base[@]}" --new "${new[@]}" \
+    --base-label "$2" --new-label "$3"
+}
+
+cmd_resume() {
+  [ $# -eq 1 ] || die "usage: heval resume <job name or folder>"
+  local job="$1"
+  [ -d "$job" ] || job="$JOBS_DIR/$1"
+  [ -f "$job/config.json" ] || die "no job '$1' (see: heval jobs)"
+  python3 "$HEVAL_LIB/harbor_compare.py" --prune "$job"
+  exec harbor jobs resume -p "$job"
+}
+
+cmd_check() {
+  local args=(-d "$DATASET" -a oracle -e "$ENV_TYPE" -n "$CONCURRENCY" -o "$JOBS_DIR"
+              --job-name "$(suite_tag)__oracle__$(date +%Y%m%d-%H%M%S)" -y)
+  [ -n "${N_TASKS:-}" ] && args+=(-l "$N_TASKS")
+  local x; for x in "${EXCLUDE_TASKS[@]+"${EXCLUDE_TASKS[@]}"}"; do args+=(-x "$x"); done
+  exec harbor run "${args[@]}" "$@"
+}
+
+case "${1:-}" in
+  run)     shift; cmd_run "$@" ;;
+  compare) shift; cmd_compare "$@" ;;
+  resume)  shift; cmd_resume "$@" ;;
+  check)   shift; cmd_check "$@" ;;
+  jobs)    ls -1 "$JOBS_DIR" 2>/dev/null | grep -v '\.excluded$' || true ;;
+  view)    shift; exec harbor view "$JOBS_DIR" "$@" ;;
+  *)       sed -n '2,13p' "$_src" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac
