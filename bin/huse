@@ -29,6 +29,7 @@ usage:
   huse off                                      go back to your normal setup
   huse run <profile> <cmd> [args...]            run one command with a profile
   huse ls                                       list profiles
+  huse promote <profile> [--save-as <profile>]  make a profile your main setup (saves the old one as a profile)
   huse status                                   show what is active
   huse setup                                    move the skills in ~/.agents/skills to the store
   huse skill ls [<profile>]                     list the skills in the store, and where a profile uses them
@@ -83,10 +84,14 @@ _huse_unset_profile() {
 
 # ---- commands ------------------------------------------------------------------------
 
+_huse_check_name() {
+  case "$1" in system|off|*/*|.*|"") echo "huse: bad profile name '$1'" >&2; return 1 ;; esac
+}
+
 _huse_new() {
   local name="${1:-}" from="" dir tool src
   [ -n "$name" ] || { echo "usage: huse new <profile> [--from system|<profile>]" >&2; return 1; }
-  case "$name" in system|off|*/*|.*) echo "huse: bad profile name '$name'" >&2; return 1 ;; esac
+  _huse_check_name "$name" || return 1
   [ "${2:-}" = "--from" ] && from="${3:-}"
   if [ -n "$from" ] && [ "$from" != system ] && [ ! -d "$(_huse_dir "$from")" ]; then
     echo "huse: no profile '$from'" >&2; return 1
@@ -110,6 +115,53 @@ _huse_new() {
     done
   done
   echo "huse: created '$name'${from:+ (copied from $from)} at $dir"
+}
+
+# The config entries that `huse promote` moves, for each harness. Everything else in the
+# main folders (logins, sessions, history, state, caches) stays where it is.
+_huse_config_entries() {
+  case "$1" in
+    claude) echo "settings.json CLAUDE.md skills agents commands hooks output-styles plugins keybindings.json" ;;
+    codex)  echo "config.toml AGENTS.md skills rules prompts hooks.json plugins" ;;
+    pi)     echo "settings.json AGENTS.md SYSTEM.md APPEND_SYSTEM.md skills extensions prompts themes models.json keybindings.json" ;;
+  esac
+}
+
+# Make a profile the main setup. First move the main config into a new profile, so that
+# `huse promote <that profile>` goes back. Logins and sessions never move.
+_huse_promote() {
+  local name="${1:-}" save="" dir savedir n=2 h main e
+  [ -n "$name" ] && [ "$name" != system ] ||
+    { echo "usage: huse promote <profile> [--save-as <profile>] (give a profile, not system)" >&2; return 1; }
+  dir="$(_huse_profile "$name")" || return 1
+  if [ "${2:-}" = "--save-as" ]; then
+    save="${3:-}"
+    _huse_check_name "$save" || return 1
+    [ -e "$(_huse_dir "$save")" ] && { echo "huse: profile '$save' already exists" >&2; return 1; }
+  else
+    save="before-$name"
+    while [ -e "$(_huse_dir "$save")" ]; do save="before-$name-$n"; n=$((n + 1)); done
+  fi
+  savedir="$(_huse_dir "$save")"
+
+  for h in $HARNESSES; do
+    main="$(_huse_part system "$h")"
+    mkdir -p "$savedir/$h" "$main" || return 1
+    for e in $(_huse_config_entries "$h"); do
+      [ -e "$main/$e" ] || [ -L "$main/$e" ] || continue
+      mv "$main/$e" "$savedir/$h/$e" || { echo "huse: could not move $main/$e" >&2; return 1; }
+    done
+  done
+  echo "huse: saved your main config as the profile '$save'. To go back: huse promote $save"
+
+  for h in $HARNESSES; do
+    main="$(_huse_part system "$h")"
+    for e in $(_huse_config_entries "$h"); do
+      [ -e "$dir/$h/$e" ] || [ -L "$dir/$h/$e" ] || continue
+      cp -a "$dir/$h/$e" "$main/$e" || { echo "huse: could not copy $dir/$h/$e" >&2; return 1; }
+    done
+  done
+  echo "huse: '$name' is now your main setup. Logins and sessions did not change."
 }
 
 # Without shell integration: open a new shell with the profile.
@@ -346,6 +398,7 @@ case "$cmd" in
   ls|list)        _huse_list ;;
   status)         _huse_status ;;
   setup)          _huse_setup ;;
+  promote)        _huse_promote "$@" ;;
   skill|skills)   _huse_skill "$@" ;;
   init)           _huse_init ;;
   __env)          _huse_env "$@" ;;

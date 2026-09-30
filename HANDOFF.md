@@ -43,6 +43,10 @@ These are facts from the conversation. Confirm them with the user before you dep
 
 ## Design decisions (do not undo them without asking the user)
 
+### The main goal (confirmed by the user on 2026-09-30)
+
+Try a new harness setup from scratch in one shell, keep the main setup in all other shells, and make the new setup the main one when it is ready (`huse promote`). `heval` is a side effect. Sessions are per profile on purpose: a profile from scratch has its own sessions. The user rejected designs that link or sync sessions between profiles (a sync problem).
+
 ### huse: CODEX_HOME and a central skill store (changed on 2026-09-30)
 
 A profile sets only `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `PI_CODING_AGENT_DIR`. Skills are kept one time in `~/.harness/skills`. Each harness folder of a profile has links to the skills that it uses (`huse skill add|rm`). `huse setup` moves `~/.agents/skills` to the store, because Codex and pi read that folder in every profile. `huse status` warns when it has skills again.

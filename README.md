@@ -143,6 +143,32 @@ huse skill add system web-design claude  # your normal setup of Claude Code uses
 
 `huse skill rm` removes only links to the store. It never deletes a skill. A real skill folder in a harness folder also works, but only that profile has it.
 
+### Make a profile your main setup
+
+Try a new setup in one shell. When it is ready, make it your main setup. In this example, `tuned` is an example profile name:
+
+```sh
+huse new tuned            # an empty profile, from scratch
+huse use tuned            # only this shell uses it: log in, add skills, try it
+huse promote tuned        # "tuned" becomes your main setup
+huse promote before-tuned # go back to the old main setup
+```
+
+`huse promote <profile>` does these steps:
+
+1. It moves the config of your main setup into a new profile, `before-<profile>`. If that name exists, it adds a number. To choose the name, add `--save-as <name>`.
+2. It copies the config of the profile into `~/.claude`, `~/.codex`, and `~/.pi/agent`.
+
+Only these config entries move. Logins, sessions, history, and caches stay in your main folders, so you can still resume your sessions:
+
+| Harness | Config entries |
+| --- | --- |
+| Claude Code | `settings.json`, `CLAUDE.md`, `skills/`, `agents/`, `commands/`, `hooks/`, `output-styles/`, `plugins/`, `keybindings.json` |
+| Codex | `config.toml`, `AGENTS.md`, `skills/`, `rules/`, `prompts/`, `hooks.json`, `plugins/` |
+| pi | `settings.json`, `AGENTS.md`, `SYSTEM.md`, `APPEND_SYSTEM.md`, `skills/`, `extensions/`, `prompts/`, `themes/`, `models.json`, `keybindings.json` |
+
+Sessions that you made in the profile stay in the profile. Links copy as links. If a main config file is a link into your dotfiles, the saved profile keeps the link, and the promoted file replaces it.
+
 ### Log in to a profile
 
 Logins do not copy. Log in one time in each profile, for each harness that you use. For the profile `tuned`:
@@ -185,6 +211,7 @@ You can use different profiles in different shells at the same time.
 | `huse off` | With integration, go back to your normal setup. In a huse shell without integration, type `exit`. |
 | `huse run <profile> <command> [args...]` | Run one command with a profile. |
 | `huse ls` | List your profiles. `*` marks the profile of this shell. |
+| `huse promote <profile> [--save-as <profile>]` | Make a profile your main setup. Save the old main config as a profile. See "Make a profile your main setup". |
 | `huse status` | Show the profile of this shell and its folders. Warn if `~/.agents/skills` has skills. |
 | `huse setup` | Move the skills in `~/.agents/skills` to the store. Your normal setup of Codex and pi keeps them. |
 | `huse skill ls\|add\|rm ...` | List the skills in the store. Add or remove a skill in a profile. See "Skills". |

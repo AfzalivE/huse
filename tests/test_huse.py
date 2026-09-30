@@ -357,3 +357,97 @@ def test_huse_works_through_a_symlink(home, ready, tmp_path):
     e = dict(ready, PATH=str(link) + os.pathsep + ready["PATH"])
     r = subprocess.run(["huse", "__env", "tuned"], env=e, capture_output=True, text=True)
     assert "CODEX_HOME=" in r.stdout and r.returncode == 0
+
+
+# ---- promote -------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def main_setup(home):
+    """A normal setup with config, a login, and sessions."""
+    (home / ".codex/config.toml").write_text('model = "old"\n')
+    (home / ".codex/hooks.json").write_text("{}")
+    (home / ".codex/auth.json").write_text('{"main": 1}')
+    (home / ".codex/sessions").mkdir()
+    (home / ".codex/sessions/s.jsonl").write_text("x")
+    (home / ".codex/session_index.jsonl").write_text("x")
+    (home / ".claude/settings.json").write_text('{"old": 1}')
+    (home / ".pi/agent/settings.json").write_text('{"old": 1}')
+    return home
+
+
+def test_promote_makes_the_profile_the_main_setup(home, env, main_setup):
+    huse("new", "tuned", env=env, check=True)
+    (profile(home, "tuned") / "codex/config.toml").write_text('model = "new"\n')
+    (profile(home, "tuned") / "codex/auth.json").write_text('{"profile": 1}')
+    (profile(home, "tuned") / "claude/CLAUDE.md").write_text("# new\n")
+    r = huse("promote", "tuned", env=env, check=True)
+    assert "before-tuned" in r.stdout
+    assert (home / ".codex/config.toml").read_text() == 'model = "new"\n'
+    assert not (home / ".codex/hooks.json").exists()  # main now matches the profile
+    assert not (home / ".claude/settings.json").exists()
+    assert (home / ".claude/CLAUDE.md").read_text() == "# new\n"
+    # Logins, sessions, and state never move.
+    assert (home / ".codex/auth.json").read_text() == '{"main": 1}'
+    assert (home / ".codex/sessions/s.jsonl").exists() and (home / ".codex/session_index.jsonl").exists()
+    # The profile does not change.
+    assert (profile(home, "tuned") / "codex/config.toml").exists()
+
+
+def test_promote_saves_the_old_main_setup_as_a_profile(home, env, main_setup):
+    huse("new", "tuned", env=env, check=True)
+    huse("promote", "tuned", env=env, check=True)
+    saved = profile(home, "before-tuned")
+    assert (saved / "codex/config.toml").read_text() == 'model = "old"\n'
+    assert (saved / "codex/hooks.json").exists() and (saved / "claude/settings.json").exists()
+    for gone in ("codex/auth.json", "codex/sessions", "codex/session_index.jsonl"):
+        assert not (saved / gone).exists(), gone
+
+
+def test_promote_the_saved_profile_to_go_back(home, env, main_setup):
+    huse("new", "tuned", env=env, check=True)
+    huse("promote", "tuned", env=env, check=True)
+    r = huse("promote", "before-tuned", env=env, check=True)
+    assert "before-before-tuned" in r.stdout
+    assert (home / ".codex/config.toml").read_text() == 'model = "old"\n'
+    assert (home / ".codex/hooks.json").exists()
+    assert (home / ".claude/settings.json").read_text() == '{"old": 1}'
+
+
+def test_promote_numbers_the_saved_name_and_accepts_save_as(home, env, main_setup):
+    huse("new", "tuned", env=env, check=True)
+    huse("new", "before-tuned", env=env, check=True)
+    assert "before-tuned-2" in huse("promote", "tuned", env=env, check=True).stdout
+    huse("promote", "tuned", "--save-as", "old-main", env=env, check=True)
+    assert profile(home, "old-main").is_dir()
+
+
+def test_promote_keeps_skill_links_and_links_to_dotfiles(home, env, main_setup, tmp_path):
+    dot = tmp_path / "dotfiles-settings.json"
+    dot.write_text("{}")
+    (home / ".pi/agent/settings.json").unlink()
+    (home / ".pi/agent/settings.json").symlink_to(dot)
+    add_to_store(home, "s1")
+    huse("new", "tuned", env=env, check=True)
+    huse("skill", "add", "tuned", "s1", "codex", env=env, check=True)
+    huse("promote", "tuned", env=env, check=True)
+    assert os.readlink(home / ".codex/skills/s1") == str(store(home) / "s1")
+    assert os.readlink(profile(home, "before-tuned") / "pi/settings.json") == str(dot)
+    assert dot.read_text() == "{}"
+
+
+@pytest.mark.parametrize(
+    ("args", "error"),
+    [
+        (("nope",), "no profile 'nope'"),
+        (("system",), "give a profile"),
+        (("tuned", "--save-as", "tuned"), "already exists"),
+        (("tuned", "--save-as", "a/b"), "bad profile name"),
+        ((), "give a profile"),
+    ],
+)
+def test_promote_errors_change_nothing(home, env, main_setup, args, error):
+    huse("new", "tuned", env=env, check=True)
+    r = huse("promote", *args, env=env)
+    assert r.returncode == 1 and error in r.stderr
+    assert (home / ".codex/config.toml").read_text() == 'model = "old"\n'

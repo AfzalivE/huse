@@ -55,7 +55,8 @@ Keep these true in every change.
 8. Skills: each skill is kept one time, in the store `$HARNESS_ROOT/skills`. A profile uses a skill through a link `<harness folder>/skills/<skill>` to the absolute store path. `huse skill rm` removes only such links. It never deletes a real folder or a store entry.
 9. Only `huse setup` changes `~/.agents/skills`. It moves each entry to the store and never deletes a skill. It keeps an entry if the store already has that name. It makes a relative link absolute before it moves it. It links each moved skill into the normal setup of Codex and pi (`~/.codex/skills`, `~/.pi/agent/skills`), because they read `~/.agents/skills` before.
 10. Codex reads `$CODEX_HOME/skills` (deprecated in Codex, but it works), and pi reads `$PI_CODING_AGENT_DIR/skills`. Both also read `~/.agents/skills` in every profile. `tests/test_agents_real.py` checks this with the real programs.
-11. Profile names `system` and `off` are reserved. Names must not contain `/` or start with `.`.
+11. `huse promote` moves only the config entries in `_huse_config_entries`. It never moves or copies logins, sessions, history, state, or caches. It moves the old main config into a new profile before it copies, so that another promote goes back. It never deletes a file.
+12. Profile names `system` and `off` are reserved. Names must not contain `/` or start with `.`.
 
 ### heval
 
