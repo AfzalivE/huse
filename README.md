@@ -2,8 +2,19 @@
 
 Two tools for agent harness profiles (Claude Code, Codex, pi):
 
-- `huse` switches between harness profiles on your machine.
+- `huse` lets you build a new harness setup in one shell, while your main setup stays in all other shells.
 - `heval` runs Harbor benchmark suites against those profiles and compares them. See [docs/heval.md](docs/heval.md).
+
+## What huse is for
+
+Use `huse` to try a new harness setup without risk to your main setup:
+
+1. Make a profile from scratch: `huse new <profile>`.
+2. Use it in one shell: `huse use <profile>`. All other shells, and your desktop apps, keep your main setup.
+3. Log in, add skills and instructions, and work with it.
+4. When it is ready, make it your main setup: `huse promote <profile>`. If you do not want it, delete its folder, `~/.harness/profiles/<profile>`.
+
+`huse` is not a tool to switch between many profiles every day. Each profile has its own logins, sessions, and history. A session that you start in a profile resumes only in that profile. Keep a profile only while you try it. Then promote it or delete it.
 
 The repo holds code, settings, and docs. Your data stays outside the repo: `huse` uses `~/.harness`, and `heval` uses `~/.heval`. See "Folders" below.
 

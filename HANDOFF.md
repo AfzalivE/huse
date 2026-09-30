@@ -25,8 +25,7 @@ Two command-line tools for agent harness profiles (Claude Code, Codex, pi):
   - Bash 3.2.57 (built from Apple's source, `apple-oss-distributions/bash`) and bash 5, zsh.
   - The real Codex CLI 0.158.0 and pi 0.87.1 (`tests/test_agents_real.py`). No model and no login.
   - Harbor 0.23.0 (`tests/test_harbor.py`, including real `harbor run --dry-run`).
-- **CI never ran.** `.github/workflows/ci.yml` was written but not run on GitHub. Check the first run of each job: `lint`, `test` (Ubuntu and macOS, with Bash 3.2 on macOS), `harbor`, and `agents`.
-- The user may not have a git repo or a first commit yet. Check with `git status`.
+- CI passes on GitHub: `lint`, `test` (Ubuntu and macOS, with Bash 3.2 on macOS), `harbor`, and `agents` (first run on 2026-09-30).
 
 ## The user's setup
 
@@ -91,7 +90,7 @@ Other huse decisions:
 In order of priority:
 
 1. **Verify on the user's Mac, in a real terminal.** Run `huse setup`, then check `huse use`, `huse init` integration, and `huse skill add`. Check that `claude`, `codex`, and `pi` all see the right skills in a profile shell. Claude Code reading `CLAUDE_CONFIG_DIR/skills` links was not tested with the real program.
-2. **Check the first CI run** and fix what fails.
+2. Done: the first CI run passed.
 3. Done: `heval compare` excludes login errors in the middle of a run (`LOGIN_RE` in `lib/harbor_compare.py`).
 4. Done: `heval check` prints the tasks that failed the oracle run (`--oracle-failures`).
 5. **Decisions that the user has not made yet.** Ask before you build:
