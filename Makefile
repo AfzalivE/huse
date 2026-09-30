@@ -4,7 +4,7 @@ SCRIPTS := bin/huse bin/heval
 PYFILES := lib tests
 BASH32  ?= /bin/bash
 
-.PHONY: check lint format test test-harbor test-bash32
+.PHONY: check lint format test test-harbor test-agents test-bash32
 
 check: lint test          ## lint and test (run this before each commit)
 
@@ -22,6 +22,9 @@ test:                     ## all tests (Harbor tests skip if harbor is not insta
 
 test-harbor:              ## only the tests that need harbor (pip install --group harbor)
 	$(PYTHON) -m pytest -m harbor
+
+test-agents:              ## only the tests with the real codex and pi (npm install -g @openai/codex @earendil-works/pi-coding-agent)
+	$(PYTHON) -m pytest -m agents
 
 test-bash32:              ## all tests with Bash 3.2, the macOS /bin/bash (set BASH32 elsewhere)
 	@d=$$(mktemp -d) && ln -s "$(BASH32)" "$$d/bash" && \

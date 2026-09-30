@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import subprocess
 
 import pytest
@@ -31,16 +32,26 @@ def conf(tmp_path):
 
 @pytest.fixture
 def henv(env, conf, home):
-    """heval environment with two profiles: base (with skills and AGENTS.md) and bare (empty)."""
+    """heval environment with two profiles: base (skills and instructions for each harness) and bare (empty)."""
     base = home / ".harness/profiles/base"
-    (base / "agents/skills/s1").mkdir(parents=True)
-    (base / "agents/skills/s1/SKILL.md").write_text("---\n")
-    (base / "agents/AGENTS.md").write_text("# rules\n")
+    for part, instr in (("claude", "CLAUDE.md"), ("codex", "AGENTS.md"), ("pi", "AGENTS.md")):
+        (base / part / "skills/s1").mkdir(parents=True)
+        (base / part / "skills/s1/SKILL.md").write_text("---\n")
+        (base / part / instr).write_text("# rules\n")
     for part in ("claude", "codex", "pi"):
-        (base / part).mkdir()
-    for part in ("claude", "codex", "pi", "agents"):
         (home / ".harness/profiles/bare" / part).mkdir(parents=True)
-    return dict(env, HEVAL_CONF=str(conf))
+    shutil.rmtree(home / ".agents/skills/orig")  # most tests: no global skills
+    logins = home / "logins"
+    logins.mkdir()
+    (logins / "codex.json").write_text("{}")
+    (logins / "pi.json").write_text('{"openai-codex": {"type": "oauth"}}')
+    return dict(
+        env,
+        HEVAL_CONF=str(conf),
+        CLAUDE_CODE_OAUTH_TOKEN="test-token",
+        CODEX_AUTH_JSON_PATH=str(logins / "codex.json"),
+        PI_AUTH_JSON_PATH=str(logins / "pi.json"),
+    )
 
 
 def opt(args, flag):
@@ -92,8 +103,8 @@ def test_run_claude_builds_expected_command(henv, home):
     assert opt(a, "-o") == [str(home / ".heval/jobs")]
     assert re.fullmatch(rf"{SUITE}__claude__base__\d{{8}}-\d{{6}}", opt(a, "--job-name")[0])
     base = home / ".harness/profiles/base"
-    assert opt(a, "--skill") == [str(base / "agents/skills")]
-    assert opt(a, "--ae") == [f"HARNESS_INSTRUCTIONS={base}/agents/AGENTS.md"]
+    assert opt(a, "--skill") == [str(base / "claude/skills")]
+    assert opt(a, "--ae") == [f"HARNESS_INSTRUCTIONS={base}/claude/CLAUDE.md"]
     assert opt(a, "--ak") == ["version=9.9.9"]
     assert a[-1] == "--dry-run"  # extra arguments go to harbor
 
@@ -105,21 +116,21 @@ def test_run_claude_builds_expected_command(henv, home):
         ("pi", "PiProfile", "openai-codex/model-z"),
     ],
 )
-def test_run_other_harnesses(henv, harness, cls, model):
+def test_run_other_harnesses(henv, home, harness, cls, model):
     heval("run", harness, "base", env=henv, check=True)
     a = harbor_args(henv)
+    base = home / ".harness/profiles/base"
     assert opt(a, "-a") == [f"harbor_profile_agents:{cls}"] and opt(a, "-m") == [model]
+    assert opt(a, "--skill") == [str(base / harness / "skills")]
+    assert opt(a, "--ae") == [f"HARNESS_INSTRUCTIONS={base}/{harness}/AGENTS.md"]
     assert opt(a, "--ak") == []  # no version pinned, no config file
 
 
-def test_native_instructions_win_over_agents_md(henv, home):
+def test_config_file_is_sent(henv, home):
     base = home / ".harness/profiles/base"
-    (base / "claude/CLAUDE.md").write_text("# claude rules\n")
     (base / "claude/eval-settings.json").write_text("{}")
     heval("run", "claude", "base", env=henv, check=True)
-    a = harbor_args(henv)
-    assert opt(a, "--ae") == [f"HARNESS_INSTRUCTIONS={base}/claude/CLAUDE.md"]
-    assert f"config={base}/claude/eval-settings.json" in opt(a, "--ak")
+    assert f"config={base}/claude/eval-settings.json" in opt(harbor_args(henv), "--ak")
 
 
 def test_warns_about_at_imports(henv, home):
@@ -128,19 +139,31 @@ def test_warns_about_at_imports(henv, home):
     assert "@ imports" in r.stderr
 
 
-def test_claude_skills_link_is_not_sent_twice(henv, home):
-    base = home / ".harness/profiles/base"
-    (base / "claude/skills").symlink_to(base / "agents/skills")
-    heval("run", "claude", "base", env=henv, check=True)
-    assert opt(harbor_args(henv), "--skill") == [str(base / "agents/skills")]
+@pytest.mark.parametrize("harness", ["codex", "pi"])
+def test_global_skills_are_sent_for_codex_and_pi(henv, home, harness):
+    # Codex and pi read ~/.agents/skills in every profile, so the run must get them too.
+    (home / ".agents/skills/g1").mkdir(parents=True)
+    (home / ".agents/skills/g1/SKILL.md").write_text("---\n")
+    r = heval("run", harness, "bare", env=henv, check=True)
+    assert opt(harbor_args(henv), "--skill") == [str(home / ".agents/skills")]
+    assert "huse setup" in r.stderr
 
 
-def test_separate_claude_skills_are_sent_too(henv, home):
-    base = home / ".harness/profiles/base"
-    (base / "claude/skills/c1").mkdir(parents=True)
-    (base / "claude/skills/c1/SKILL.md").write_text("---\n")
-    heval("run", "claude", "base", env=henv, check=True)
-    assert opt(harbor_args(henv), "--skill") == [str(base / "agents/skills"), str(base / "claude/skills")]
+def test_global_skills_are_not_sent_for_claude(henv, home):
+    (home / ".agents/skills/g1").mkdir(parents=True)
+    (home / ".agents/skills/g1/SKILL.md").write_text("---\n")
+    heval("run", "claude", "bare", env=henv, check=True)
+    assert opt(harbor_args(henv), "--skill") == []
+
+
+def test_skill_links_to_the_store_are_sent(henv, home):
+    s1 = home / ".harness/skills/linked"
+    s1.mkdir(parents=True)
+    (s1 / "SKILL.md").write_text("---\n")
+    (home / ".harness/profiles/bare/codex/skills").mkdir()
+    (home / ".harness/profiles/bare/codex/skills/linked").symlink_to(s1)
+    heval("run", "codex", "bare", env=henv, check=True)
+    assert opt(harbor_args(henv), "--skill") == [str(home / ".harness/profiles/bare/codex/skills")]
 
 
 def test_empty_profile_sends_no_skills_or_instructions(henv):
@@ -149,12 +172,14 @@ def test_empty_profile_sends_no_skills_or_instructions(henv):
     assert opt(a, "--skill") == [] and opt(a, "--ae") == []
 
 
-def test_system_profile_uses_agents_system(henv, home):
-    sys_agents = home / ".harness/agents.system"
-    (sys_agents / "skills/x").mkdir(parents=True)
-    (sys_agents / "skills/x/SKILL.md").write_text("---\n")
+def test_system_profile_uses_the_normal_folders(henv, home):
+    (home / ".codex/skills/x").mkdir(parents=True)
+    (home / ".codex/skills/x/SKILL.md").write_text("---\n")
+    (home / ".codex/AGENTS.md").write_text("# rules\n")
     heval("run", "codex", "system", env=henv, check=True)
-    assert opt(harbor_args(henv), "--skill") == [str(sys_agents / "skills")]
+    a = harbor_args(henv)
+    assert opt(a, "--skill") == [str(home / ".codex/skills")]
+    assert opt(a, "--ae") == [f"HARNESS_INSTRUCTIONS={home}/.codex/AGENTS.md"]
 
 
 def test_check_runs_oracle(henv):
@@ -162,6 +187,35 @@ def test_check_runs_oracle(henv):
     a = harbor_args(henv)
     assert opt(a, "-a") == ["oracle"] and opt(a, "-x") == ["bad-task", "other task"]
     assert re.fullmatch(rf"{SUITE}__oracle__\d{{8}}-\d{{6}}", opt(a, "--job-name")[0])
+
+
+# A fake harbor that writes an oracle job: task "ok" passes, task "broken" fails.
+FAKE_ORACLE_HARBOR = """#!/usr/bin/env python3
+import json, os, sys
+a = sys.argv[1:]
+job = os.path.join(a[a.index("-o") + 1], a[a.index("--job-name") + 1])
+os.makedirs(job)
+open(os.path.join(job, "config.json"), "w").write("{}")
+for task, reward in (("ok", 1), ("broken", 0)):
+    os.makedirs(os.path.join(job, task))
+    r = {"task_name": task, "verifier_result": {"rewards": {"reward": reward}}}
+    open(os.path.join(job, task, "result.json"), "w").write(json.dumps(r))
+sys.exit(int(os.environ.get("FAKE_HARBOR_EXIT", "0")))
+"""
+
+
+@pytest.mark.parametrize("code", [0, 3])
+def test_check_prints_tasks_that_failed_the_oracle(henv, fakebin, code):
+    (fakebin / "harbor").write_text(FAKE_ORACLE_HARBOR)
+    r = heval("check", env=dict(henv, FAKE_HARBOR_EXIT=str(code)))
+    assert r.returncode == code
+    assert r.stdout.splitlines()[-1] == '  "broken"'
+    assert "1 tasks failed the oracle run" in r.stderr
+
+
+def test_check_dry_run_prints_no_failures(henv):
+    r = heval("check", "--dry-run", env=henv, check=True)
+    assert "oracle run" not in r.stderr
 
 
 # ---- env file, PYTHONPATH, symlinks -------------------------------------------------------
@@ -280,3 +334,67 @@ def test_note_about_files_in_the_old_place(henv, home):
 
 def test_no_note_without_old_files(henv):
     assert "heval now keeps" not in heval("check", env=henv, check=True).stderr
+
+
+# ---- login check before a run -------------------------------------------------------------
+
+
+def without(env, *names):
+    return {k: v for k, v in env.items() if k not in names}
+
+
+@pytest.mark.parametrize(
+    "harness,remove,message",
+    [
+        ("claude", ("CLAUDE_CODE_OAUTH_TOKEN",), "no Claude login"),
+        ("codex", ("CODEX_AUTH_JSON_PATH",), "no Codex login"),
+        ("pi", ("PI_AUTH_JSON_PATH",), "no pi login"),
+    ],
+)
+def test_run_stops_without_a_login(henv, harness, remove, message):
+    r = heval("run", harness, "base", env=without(henv, *remove))
+    assert r.returncode == 1 and message in r.stderr
+    assert not os.path.exists(henv["FAKE_HARBOR_ARGS"])  # no job started
+
+
+@pytest.mark.parametrize("harness,var", [("codex", "CODEX_AUTH_JSON_PATH"), ("pi", "PI_AUTH_JSON_PATH")])
+def test_run_stops_when_the_login_file_is_missing(henv, tmp_path, harness, var):
+    r = heval("run", harness, "base", env=dict(henv, **{var: str(tmp_path / "nope.json")}))
+    assert r.returncode == 1 and "missing file" in r.stderr
+
+
+def test_pi_login_without_openai_codex_warns(henv, home):
+    (home / "logins/pi.json").write_text('{"anthropic": {}}')
+    r = heval("run", "pi", "base", env=henv, check=True)
+    assert "no openai-codex login" in r.stderr
+
+
+def test_pi_with_an_api_key_provider_needs_no_login_file(henv, conf):
+    conf.write_text(CONF.replace("openai-codex/model-z", "openrouter/model-z"))
+    heval("run", "pi", "base", env=without(henv, "PI_AUTH_JSON_PATH"), check=True)
+
+
+@pytest.mark.parametrize(
+    "harness,alternative",
+    [
+        ("claude", {"ANTHROPIC_API_KEY": "k"}),
+        ("codex", {"OPENAI_API_KEY": "k"}),
+        ("codex", {"CODEX_FORCE_AUTH_JSON": "1"}),
+    ],
+)
+def test_api_keys_also_count_as_logins(henv, harness, alternative):
+    e = without(henv, "CLAUDE_CODE_OAUTH_TOKEN", "CODEX_AUTH_JSON_PATH")
+    heval("run", harness, "base", env=dict(e, **alternative), check=True)
+
+
+def test_login_check_can_be_skipped(henv):
+    e = dict(without(henv, "CLAUDE_CODE_OAUTH_TOKEN"), HEVAL_SKIP_LOGIN_CHECK="1")
+    heval("run", "claude", "base", env=e, check=True)
+
+
+def test_logins_from_eval_env_count(henv, home):
+    f = home / ".heval/eval.env"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("CLAUDE_CODE_OAUTH_TOKEN=from-file\n")
+    f.chmod(0o600)
+    heval("run", "claude", "base", env=without(henv, "CLAUDE_CODE_OAUTH_TOKEN"), check=True)

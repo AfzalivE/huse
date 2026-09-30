@@ -28,7 +28,26 @@ PROFILE_VARS = (
     "HEVAL_ENV",
     "JOBS_DIR",
     "HEVAL_HOME",
+    "HEVAL_SKIP_LOGIN_CHECK",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "CODEX_AUTH_JSON_PATH",
+    "CODEX_FORCE_AUTH_JSON",
+    "PI_AUTH_JSON_PATH",
+    "ZDOTDIR",
 )
+
+# Fake codex and pi: print what they see. They let the tests check huse without the real programs.
+# printf, not echo: dash's echo changes backslashes.
+FAKE_AGENT = """#!/bin/sh
+printf 'TOOL=%s\\n' NAME
+printf 'HOME=%s\\n' "$HOME"
+printf 'CODEX_HOME=%s\\n' "${CODEX_HOME:-}"
+printf 'PI_DIR=%s\\n' "${PI_CODING_AGENT_DIR:-}"
+for a in "$@"; do printf 'ARG=%s\\n' "$a"; done
+"""
 
 FAKE_HARBOR = """#!/bin/sh
 # Fake harbor: record the arguments and the environment, then succeed.
@@ -55,6 +74,10 @@ def fakebin(tmp_path):
     harbor = d / "harbor"
     harbor.write_text(FAKE_HARBOR)
     harbor.chmod(0o755)
+    for tool in ("codex", "pi"):
+        f = d / tool
+        f.write_text(FAKE_AGENT.replace("NAME", tool))
+        f.chmod(0o755)
     return d
 
 
@@ -94,8 +117,14 @@ def heval(*args, **kw):
     return run("heval", *args, **kw)
 
 
-def agents_target(home: Path) -> str:
-    return os.readlink(home / ".agents")
+def seen(output: str) -> dict[str, list[str]]:
+    """Parse the output of a fake agent: KEY=value lines."""
+    out: dict[str, list[str]] = {}
+    for line in output.splitlines():
+        k, sep, v = line.partition("=")
+        if sep:
+            out.setdefault(k, []).append(v)
+    return out
 
 
 def harbor_args(env) -> list[str]:

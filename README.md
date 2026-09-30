@@ -15,25 +15,21 @@ The repo holds code, settings, and docs. Your data stays outside the repo: `huse
 
 ```
 ~/.harness/
-├── agents.system/                  your original ~/.agents (made by `huse setup`)
-├── profiles/
-│   ├── tuned/                      one folder for each profile (made by `huse new`)
-│   │   ├── claude/                 used as CLAUDE_CONFIG_DIR
-│   │   ├── codex/                  used as CODEX_HOME
-│   │   ├── pi/                     used as PI_CODING_AGENT_DIR
-│   │   └── agents/                 used as ~/.agents
-│   └── lean/
-│       └── ...
+├── skills/                         the skill store: one folder for each skill
+│   └── <skill>/
+└── profiles/
+    ├── tuned/                      one folder for each profile (made by `huse new`)
+    │   ├── claude/                 used as CLAUDE_CONFIG_DIR
+    │   │   └── skills/<skill> -> ~/.harness/skills/<skill>
+    │   ├── codex/                  used as CODEX_HOME
+    │   │   └── skills/<skill> -> ~/.harness/skills/<skill>
+    │   └── pi/                     used as PI_CODING_AGENT_DIR
+    │       └── skills/<skill> -> ~/.harness/skills/<skill>
+    └── lean/
+        └── ...
 ```
 
-`tuned` and `lean` are example profile names. If your original `~/.agents` was a symlink (for example, into a dotfiles repo), `agents.system` is a symlink to the same folder.
-
-`~/.agents` is a symlink that `huse` points at one of these folders:
-
-```
-~/.agents -> ~/.harness/agents.system          your normal setup
-~/.agents -> ~/.harness/profiles/tuned/agents  while you use the profile "tuned"
-```
+`tuned` and `lean` are example profile names. See "How it works" below.
 
 ### ~/.heval (heval data, never commit it)
 
@@ -55,6 +51,7 @@ harness-tools/
 ├── Makefile                        make check, make test, make lint
 ├── pyproject.toml                  version, dev tools, test settings
 ├── AGENTS.md                       instructions for coding agents
+├── CLAUDE.md                       loads AGENTS.md in Claude Code
 ├── CHANGELOG.md
 └── README.md
 ```
@@ -69,8 +66,7 @@ harness-tools/
    ```
 
 3. Open a new shell. Then `huse` and `heval` work from any folder.
-4. Do the one-time setup of `~/.agents`. See "Set up ~/.agents (one time)" below.
-5. Optional: to let `huse use` change the current shell, add this line after the `PATH` line. See "Two ways to use a profile" below.
+4. Optional: to let `huse use` change the current shell, add this line after the `PATH` line. See "Two ways to use a profile" below.
 
    ```sh
    eval "$(huse init)"
@@ -86,34 +82,21 @@ A profile is a named set of settings for Claude Code, Codex, and pi. You choose 
 
 The examples use `tuned` and `lean` as profile names. Replace them with your own names. `huse ls` shows the names of your profiles.
 
-`system` is a special name, not a profile. It means your normal setup: `~/.claude`, `~/.codex`, `~/.pi/agent`, and your original `~/.agents`.
+`system` is a special name, not a profile. It means your normal setup: `~/.claude`, `~/.codex`, and `~/.pi/agent`.
 
-`huse use <profile>` switches everything together:
+`huse use <profile>` changes only the current shell. Other shells, and apps that do not start from a shell, keep your normal setup. `huse` does not change project files, for example `AGENTS.md`, `CLAUDE.md`, `.claude/`, or `.agents/` in a repo.
 
-- **Settings (this shell only):** `huse` sets `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `PI_CODING_AGENT_DIR` to the profile's folders.
-- **`~/.agents` (all shells):** `huse` points the `~/.agents` symlink at the profile's `agents/` folder. Codex and pi read skills from `~/.agents/skills`, and this path has no environment variable. Thus, this change applies to all shells.
+### How it works
 
-Only one profile can have `~/.agents` at a time. If you use two profiles in two shells at the same time, the last `huse use` gets `~/.agents`, and `huse` prints a note. `huse status` shows which profile has `~/.agents`.
+- **Settings:** `huse` sets `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `PI_CODING_AGENT_DIR` to the profile's folders. It does not change `HOME` or `PATH`.
+- **Skills:** each harness reads skills from the `skills/` folder in its config folder. `huse` keeps each skill one time, in the store `~/.harness/skills`. A profile uses a skill through a link in its harness folders. `huse skill add` makes the links. See "Skills" below.
+- **`~/.agents/skills`:** Codex and pi also read this folder, in every profile. Thus, `huse setup` moves its skills to the store one time. After that, each profile chooses its own skills.
 
-`huse` does not change project files, for example `AGENTS.md`, `CLAUDE.md`, `.claude/`, or `.agents/` in a repo.
+Limits:
 
-### Set up ~/.agents (one time)
-
-`huse` must manage `~/.agents` before it can switch it. Do these steps one time:
-
-1. Stop all running agents.
-2. Make a backup: `cp -a ~/.agents ~/.agents.backup`
-3. Run `huse setup`.
-
-`huse` moves your `~/.agents` folder to `~/.harness/agents.system`. Then it replaces `~/.agents` with a symlink to that folder. The content does not change, so your agents work as before. If `~/.agents` is a git repo, the repo moves with it, and git still works there. This folder is what `system` means for `~/.agents`.
-
-If `~/.agents` is already a symlink (for example, into a dotfiles repo), `huse` does not move anything. It saves a link to the real folder as `~/.harness/agents.system`. Your edits still go to your dotfiles.
-
-If you do not have `~/.agents`, `huse` makes an empty `~/.harness/agents.system`.
-
-`huse use` and `huse run` do not work until you run `huse setup`.
-
-Run `huse status` to check the result. When you do not need the backup, delete `~/.agents.backup`.
+- **Codex marks `$CODEX_HOME/skills` as deprecated.** It still works (tested with Codex 0.159.0). If Codex removes it, profiles lose their skills in Codex. The CI job `agents` tests the newest Codex, so this shows up there.
+- **Tools that install into `~/.agents/skills`,** for example `npx skills add -g`, put skills where every profile sees them. `huse status` warns about this. Run `huse setup` again to move them to the store.
+- **Other programs that read `~/.agents/skills`** do not see the skills after `huse setup`. Link a skill back if a program needs it.
 
 ### Create a profile
 
@@ -130,26 +113,35 @@ Each profile is a folder with one part for each harness:
 ```
 ~/.harness/profiles/<profile>/
   claude/   used as CLAUDE_CONFIG_DIR     settings.json, CLAUDE.md, skills/, agents/, commands/
-  codex/    used as CODEX_HOME            config.toml, AGENTS.md
-  pi/       used as PI_CODING_AGENT_DIR   settings.json, AGENTS.md, extensions/
-  agents/   used as ~/.agents             skills/, AGENTS.md   (only the skills and files that this profile needs)
+  codex/    used as CODEX_HOME            config.toml, AGENTS.md, skills/
+  pi/       used as PI_CODING_AGENT_DIR   settings.json, AGENTS.md, skills/, extensions/
 ```
 
 To change a profile, edit the files in its folder.
 
-`--from` copies config files only. It does not copy logins, sessions, history, logs, or caches. Symlinks copy as symlinks. Thus, if a skill is a link into a repo, an edit in the profile changes the original.
+`--from` copies config files only. It does not copy logins, sessions, history, logs, or caches. Symlinks copy as symlinks. Thus, the copy uses the same skills of the store, and if a skill is a link into a repo, an edit in the profile changes the original.
 
 Claude Code keeps user-scope MCP servers in `~/.claude.json`, outside `~/.claude`. `--from system` does not copy this file. Add the MCP servers again in the profile.
 
-Claude Code reads skills from its own `skills/` folder, not from `~/.agents`. For Claude to use the same skills as Codex and pi, link its folder to `~/.agents/skills`. Set `p` to your profile name first:
+### Skills
+
+Do this one time. It moves the skills in `~/.agents/skills` to the store `~/.harness/skills`, and links them into `~/.codex/skills` and `~/.pi/agent/skills`. Your normal setup keeps the same skills:
 
 ```sh
-p=tuned
-rm -rf ~/.harness/profiles/$p/claude/skills   # only if it is a copy you do not need
-ln -s ~/.agents/skills ~/.harness/profiles/$p/claude/skills
+huse setup
 ```
 
-If `claude/skills` is already a link to `~/.agents/skills`, skip this step. After the link, Claude uses the same skills as Codex and pi when you use the profile.
+To add a new skill, put its folder in `~/.harness/skills`. Then choose the profiles that use it. In these examples, `web-design` is an example skill name:
+
+```sh
+huse skill ls tuned                      # the skills in the store, and which harnesses of "tuned" use them
+huse skill add tuned web-design          # Claude Code, Codex, and pi of "tuned" use the skill
+huse skill add lean web-design codex     # only Codex of "lean" uses the skill
+huse skill rm tuned web-design pi        # pi of "tuned" stops using the skill
+huse skill add system web-design claude  # your normal setup of Claude Code uses the skill
+```
+
+`huse skill rm` removes only links to the store. It never deletes a skill. A real skill folder in a harness folder also works, but only that profile has it.
 
 ### Log in to a profile
 
@@ -165,33 +157,37 @@ huse run tuned pi            # then type /login
 
 A program cannot change the environment of the shell that started it. Thus, `huse use <profile>` works in one of two ways:
 
-- **Without shell integration (the default):** `huse use <profile>` switches `~/.agents` and opens a new shell with the profile's settings. Type `exit` to go back to your normal shell. Then `~/.agents` also goes back to what it was before, unless another shell changed it in the meantime. In a huse shell, `huse use` does not work again. Type `exit` first.
-- **With shell integration:** add `eval "$(huse init)"` to `~/.zshrc` or `~/.bashrc`. Then `huse use <profile>` changes the current shell, and `huse off` changes it back. `~/.agents` stays on the profile until you run `huse off` or `huse use` again. The `eval` line only defines a small `huse` function that calls `bin/huse`.
+- **Without shell integration (the default):** `huse use <profile>` opens a new shell with the profile. Type `exit` to go back to your normal shell. In a huse shell, `huse use` does not work again. Type `exit` first.
+- **With shell integration:** add `eval "$(huse init)"` to `~/.zshrc` or `~/.bashrc`. Then `huse use <profile>` changes the current shell, and `huse off` changes it back. The `eval` line only defines a small `huse` function that calls `bin/huse`.
 
-`huse run <profile> <command>` works the same way in both modes. It switches the settings and `~/.agents` for one command. When the command ends, `~/.agents` goes back.
+`huse run <profile> <command>` works the same way in both modes. It uses the profile for one command.
 
 ### Switch profiles
 
 This example uses the profiles `tuned` and `lean`:
 
 ```sh
-huse use tuned        # settings and ~/.agents switch to "tuned"
-huse run lean codex   # one command with "lean"; after it, ~/.agents goes back to "tuned"
-exit                  # without integration: leave the "tuned" shell; ~/.agents goes back
-huse off              # with integration: settings and ~/.agents go back to your normal setup
+huse use tuned        # this shell uses "tuned"; other shells do not change
+codex                 # Codex with the settings and skills of "tuned"
+huse run lean pi      # one command with "lean"
+exit                  # without integration: leave the "tuned" shell
+huse off              # with integration: this shell goes back to your normal setup
 ```
+
+You can use different profiles in different shells at the same time.
 
 ### Command list
 
 | Command | Effect |
 | --- | --- |
-| `huse setup` | One time: let `huse` manage `~/.agents`. |
 | `huse new <profile> [--from system\|<other profile>]` | Make a profile, empty or copied. |
-| `huse use <profile>` | Use a profile: its settings and its `~/.agents`. Without integration, this opens a new shell. |
+| `huse use <profile>` | Use a profile in this shell. Without integration, this opens a new shell. |
 | `huse off` | With integration, go back to your normal setup. In a huse shell without integration, type `exit`. |
-| `huse run <profile> <command> [args...]` | Run one command with a profile. `~/.agents` goes back after it. |
-| `huse ls` | List your profiles. `*` marks the profile of this shell. `(~/.agents)` marks the profile that has `~/.agents`. |
-| `huse status` | Show the profile of this shell and the profile that has `~/.agents`. |
+| `huse run <profile> <command> [args...]` | Run one command with a profile. |
+| `huse ls` | List your profiles. `*` marks the profile of this shell. |
+| `huse status` | Show the profile of this shell and its folders. Warn if `~/.agents/skills` has skills. |
+| `huse setup` | Move the skills in `~/.agents/skills` to the store. Your normal setup of Codex and pi keeps them. |
+| `huse skill ls\|add\|rm ...` | List the skills in the store. Add or remove a skill in a profile. See "Skills". |
 | `huse init` | Print the shell integration. Use it as `eval "$(huse init)"`. |
 
 To show the active profile in your zsh prompt:
@@ -211,6 +207,7 @@ make check                 # shellcheck, ruff, and all tests
 - The tests run in a temporary home folder. They do not change your `~/.agents`, `~/.harness`, or `~/.heval`.
 - The Harbor tests need Harbor: `pip install --group harbor`, then `make test-harbor`. Without Harbor, they skip.
 - On macOS, `make test-bash32` runs the tests with `/bin/bash` (Bash 3.2).
+- The tests in `tests/test_agents_real.py` use the real `codex` and `pi`, without a model or a login. They check that both read the profile's skills through `CODEX_HOME` and `PI_CODING_AGENT_DIR`. Without them, these tests skip. Install them with `npm install -g @openai/codex @earendil-works/pi-coding-agent`, then run `make test-agents`.
 - `AGENTS.md` lists the rules that each change must keep.
 
 ## Environment variables

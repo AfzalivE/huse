@@ -8,10 +8,10 @@ You make the profiles with `huse`. See the [main README](../README.md#use-huse).
 
 | Command | Effect |
 | --- | --- |
-| `heval check` | Run the reference solutions. Every task must pass on your machine. |
+| `heval check` | Run the reference solutions. Every task must pass on your machine. Prints the tasks that failed. |
 | `heval run <claude\|codex\|pi> <profile> [harbor args]` | Run the suite with one harness and one profile. Add `--dry-run` to check first. |
 | `heval compare <claude\|codex\|pi> <base profile> <new profile>` | Compare two profiles, paired per task. |
-| `heval resume <job>` | Run again the trials that stopped on a usage limit or an error. |
+| `heval resume <job>` | Run again the trials that stopped on a usage limit, a login error, or another error. |
 | `heval jobs` | List jobs. |
 | `heval view` | Open the Harbor results viewer. |
 
@@ -55,8 +55,9 @@ In the repo:
    ```
 
 4. Copy `eval.env.example` from the repo to `~/.heval/eval.env`. Paste the Claude token. Run `chmod 600 ~/.heval/eval.env`.
-5. Make a frozen baseline: `huse new base --from system` (see [Create a profile](../README.md#create-a-profile)). Your daily setup changes over time, so do not use `system` as the baseline.
-6. Run `heval check`. The oracle agent must pass every task. Add the names of tasks that fail to `EXCLUDE_TASKS` in `eval.conf`.
+5. Check the logins: `heval run` stops before the job starts if the harness has no login. It checks `CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_AUTH_JSON_PATH`, and, for `openai-codex/` pi models, `PI_AUTH_JSON_PATH`.
+6. Make a frozen baseline: `huse new base --from system` (see [Create a profile](../README.md#create-a-profile)). Your daily setup changes over time, so do not use `system` as the baseline.
+7. Run `heval check`. The oracle agent must pass every task. At the end, `heval check` prints the tasks that failed, one quoted name on each line. Paste these lines into `EXCLUDE_TASKS=( ... )` in `eval.conf`. If it lists tasks that stopped on an error, run `heval check` again.
 
 ## Each experiment
 
@@ -76,8 +77,8 @@ Do not edit a profile after you run it. `heval compare` uses all jobs with the s
 
 ## What heval takes from a profile
 
-- Skills: `agents/skills`, and also `claude/skills` for Claude if it is a different folder.
-- Global instructions: `claude/CLAUDE.md`, `codex/AGENTS.md`, or `pi/AGENTS.md`. If there is no such file, `heval` uses `agents/AGENTS.md`. `@` imports do not work in the container, so put the full text in the file.
+- Skills: the `skills/` folder of the harness, for example `codex/skills`. Links to the skill store work. For Codex and pi, `heval` also sends `~/.agents/skills`, because they read it in every profile. Run `huse setup` to empty it.
+- Global instructions: `claude/CLAUDE.md`, `codex/AGENTS.md`, or `pi/AGENTS.md`. `@` imports do not work in the container, so put the full text in the file.
 - Native config (optional): `claude/eval-settings.json` or `codex/eval-config.toml`. Use a separate file with only the settings that you want to test. Your daily settings can point to hooks and scripts that are not in the container.
 - Not included: hooks, plugins, MCP servers, and pi settings and extensions.
 
@@ -86,6 +87,7 @@ Do not edit a profile after you run it. `heval compare` uses all jobs with the s
 - Do not change `eval.conf` between the runs that you compare.
 - If the model or harness version changes, run the baseline again. `heval compare` warns when versions differ.
 - Trials that stop on a usage limit or an API error do not count. Run them again with `heval resume`.
+- Trials that stop on a login error do not count. `heval` finds these messages in the error or at the end of the agent log: `No API key found`, `refresh token was already used`, and `token_invalidated`. Log in again, then run `heval resume`.
 - "No clear change" is a valid result. A small change usually needs more tasks to show.
 
 ## Environment variables
@@ -97,3 +99,4 @@ Do not edit a profile after you run it. `heval compare` uses all jobs with the s
 | `HEVAL_ENV` | `$HEVAL_HOME/eval.env` |
 | `JOBS_DIR` | `$HEVAL_HOME/jobs` |
 | `HARNESS_ROOT` | `~/.harness` (where `heval` reads the huse profiles) |
+| `HEVAL_SKIP_LOGIN_CHECK` | unset. Set it to `1` to skip the login check of `heval run`, for example for Bedrock. |

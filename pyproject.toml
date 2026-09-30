@@ -17,7 +17,10 @@ package = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
-markers = ["harbor: needs the harbor package (pip install harbor==0.23.0)"]
+markers = [
+  "harbor: needs the harbor package (pip install harbor==0.23.0)",
+  "agents: needs the real codex and pi programs (npm install -g @openai/codex @earendil-works/pi-coding-agent)",
+]
 
 [tool.ruff]
 line-length = 120

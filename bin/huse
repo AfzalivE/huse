@@ -1,37 +1,44 @@
 #!/usr/bin/env bash
-# huse - switch agent harness profiles for Claude Code, Codex and pi.
+# huse - switch agent harness profiles for Claude Code, Codex and pi, one shell at a time.
 #
-# Install: put the repo's bin/ folder on your PATH, then run `huse setup` one time.
+# Install: put the repo's bin/ folder on your PATH.
 # Profiles live in $HARNESS_ROOT (default ~/.harness), not in the repo.
 #
-# `huse use <profile>` switches two things together:
-#   - CLAUDE_CONFIG_DIR, CODEX_HOME and PI_CODING_AGENT_DIR (this shell only)
-#   - the ~/.agents symlink, to the profile's agents/ folder (all shells)
+# `huse use <profile>` changes only the current shell: CLAUDE_CONFIG_DIR, CODEX_HOME
+# and PI_CODING_AGENT_DIR point at the profile.
+#
+# Skills live in one store, $HARNESS_ROOT/skills. Each harness folder of a profile has
+# links to the skills that it uses (`huse skill add`). Codex and pi also read
+# ~/.agents/skills in every profile, so `huse setup` moves those skills to the store.
 #
 # A program cannot change the shell that started it. Thus, without shell
-# integration, `huse use` opens a new shell (type exit to leave; ~/.agents goes back).
+# integration, `huse use` opens a new shell (type exit to leave).
 # With `eval "$(huse init)"` in ~/.zshrc or ~/.bashrc, `huse use` and `huse off`
 # change the current shell instead.
 
 HUSE_VERSION="0.1.0"
 HARNESS_ROOT="${HARNESS_ROOT:-$HOME/.harness}"
-AGENTS_LINK="$HOME/.agents"
-AGENTS_SYSTEM="$HARNESS_ROOT/agents.system"
+STORE="$HARNESS_ROOT/skills"
+HARNESSES="claude codex pi"
 
 _huse_help() {
   cat >&2 <<'EOF'
 usage:
-  huse setup                                    one time: let huse manage ~/.agents
   huse new <profile> [--from system|<profile>]  make a profile (empty, or copied)
-  huse use <profile>                            use a profile: settings and ~/.agents
+  huse use <profile>                            use a profile in this shell (a new shell, or this shell with init)
   huse off                                      go back to your normal setup
   huse run <profile> <cmd> [args...]            run one command with a profile
   huse ls                                       list profiles
   huse status                                   show what is active
+  huse setup                                    move the skills in ~/.agents/skills to the store
+  huse skill ls [<profile>]                     list the skills in the store, and where a profile uses them
+  huse skill add <profile> <skill> [<harness>...]  use a skill of the store in a profile
+  huse skill rm <profile> <skill> [<harness>...]   stop using a skill in a profile
   huse init                                     print shell integration: eval "$(huse init)"
   huse --version                                print the version
 
 <profile> is a profile name that you chose with `huse new`. "system" means your normal setup.
+<harness> is claude, codex, or pi. Without one, add and rm change all three.
 EOF
 }
 
@@ -46,6 +53,21 @@ _huse_profile() {
   printf '%s' "$dir"
 }
 
+# Config folder of one harness in a profile, or in the normal setup (system).
+_huse_part() {  # <profile> <harness>
+  if [ "$1" != system ]; then
+    printf '%s/%s' "$(_huse_dir "$1")" "$2"
+    return
+  fi
+  case "$2" in
+    claude) printf '%s' "$HOME/.claude" ;;
+    codex)  printf '%s' "$HOME/.codex" ;;
+    pi)     printf '%s' "$HOME/.pi/agent" ;;
+  esac
+}
+
+# ---- profile settings -------------------------------------------------------------
+
 _huse_export_profile() {  # <profile> <dir>
   export HARNESS_PROFILE="$1"
   export CLAUDE_CONFIG_DIR="$2/claude"
@@ -59,127 +81,7 @@ _huse_unset_profile() {
   unset HARNESS_PROFILE CLAUDE_CONFIG_DIR CODEX_HOME PI_CODING_AGENT_DIR
 }
 
-# ---- ~/.agents -----------------------------------------------------------------
-
-_huse_agents_dir() {  # <profile|system>
-  if [ "$1" = system ]; then printf '%s' "$AGENTS_SYSTEM"
-  else printf '%s/agents' "$(_huse_dir "$1")"; fi
-}
-
-# Profile name for a ~/.agents target.
-_huse_agents_name() {
-  case "$1" in
-    "$AGENTS_SYSTEM") echo system ;;
-    "$HARNESS_ROOT/profiles/"*/agents) local n="${1#"$HARNESS_ROOT/profiles/"}"; echo "${n%/agents}" ;;
-    "") echo "(none)" ;;
-    *) echo "$1" ;;
-  esac
-}
-
-_huse_agents_target() { readlink "$AGENTS_LINK" 2>/dev/null || true; }
-
-_huse_is_setup() {
-  [ -L "$AGENTS_LINK" ] && { [ -e "$AGENTS_SYSTEM" ] || [ -L "$AGENTS_SYSTEM" ]; }
-}
-
-_huse_require_setup() {
-  _huse_is_setup && return 0
-  echo "huse: run 'huse setup' one time first. It moves ~/.agents to $AGENTS_SYSTEM" >&2
-  echo "huse: and replaces ~/.agents with a symlink that huse can switch." >&2
-  return 1
-}
-
-_huse_setup() {
-  if _huse_is_setup; then
-    echo "huse: already set up. ~/.agents -> $(_huse_agents_target)"
-    return 0
-  fi
-  if [ -e "$AGENTS_SYSTEM" ] || [ -L "$AGENTS_SYSTEM" ]; then
-    if [ -e "$AGENTS_LINK" ] || [ -L "$AGENTS_LINK" ]; then
-      echo "huse: both ~/.agents and $AGENTS_SYSTEM exist. Merge them by hand, then run huse setup again." >&2
-      return 1
-    fi
-  else
-    mkdir -p "$HARNESS_ROOT"
-    if [ -L "$AGENTS_LINK" ]; then
-      local real
-      real="$(cd "$AGENTS_LINK" 2>/dev/null && pwd -P)" || {
-        echo "huse: ~/.agents is a broken symlink. Fix it first." >&2; return 1; }
-      case "$real" in "$HARNESS_ROOT"/*)
-        echo "huse: ~/.agents points into $HARNESS_ROOT. Point it at your original folder first." >&2
-        return 1 ;;
-      esac
-      ln -s "$real" "$AGENTS_SYSTEM" && rm "$AGENTS_LINK"
-      echo "huse: saved your ~/.agents symlink as $AGENTS_SYSTEM (it still points to $real)"
-    elif [ -d "$AGENTS_LINK" ]; then
-      mv "$AGENTS_LINK" "$AGENTS_SYSTEM"
-      echo "huse: moved ~/.agents to $AGENTS_SYSTEM"
-    elif [ -e "$AGENTS_LINK" ]; then
-      echo "huse: ~/.agents is a file, not a folder. Move it first." >&2
-      return 1
-    else
-      mkdir -p "$AGENTS_SYSTEM"
-      echo "huse: made an empty $AGENTS_SYSTEM"
-    fi
-  fi
-  ln -s "$AGENTS_SYSTEM" "$AGENTS_LINK"
-  echo "huse: ~/.agents -> $AGENTS_SYSTEM. Your normal setup works as before."
-}
-
-# Point ~/.agents at a profile's agents/ folder.
-_huse_switch_agents() {  # <profile|system>
-  local target cur
-  target="$(_huse_agents_dir "$1")"
-  [ -d "$target" ] || { echo "huse: no agents folder at $target" >&2; return 1; }
-  cur="$(_huse_agents_target)"
-  [ "$cur" = "$target" ] && return 0
-  # Warn only when another shell probably set ~/.agents.
-  case "$cur" in
-    ""|"$AGENTS_SYSTEM"|"$(_huse_agents_dir "${HARNESS_PROFILE:-system}")") ;;
-    *) echo "huse: note: ~/.agents was on '$(_huse_agents_name "$cur")', probably from another shell. Now all shells see '$1'." >&2 ;;
-  esac
-  ln -sfn "$target" "$AGENTS_LINK"
-}
-
-# Put ~/.agents back, but only if nothing else changed it in the meantime.
-_huse_restore_agents() {  # <target that we set> <previous target>
-  local back="${2:-$AGENTS_SYSTEM}"
-  [ "$(_huse_agents_target)" = "$1" ] || return 0
-  [ -d "$back" ] || back="$AGENTS_SYSTEM"
-  [ "$back" = "$1" ] && return 0
-  ln -sfn "$back" "$AGENTS_LINK"
-  echo "huse: ~/.agents -> back to '$(_huse_agents_name "$back")'" >&2
-}
-
-# Switch ~/.agents now and put it back when this huse process exits.
-_huse_switch_agents_until_exit() {  # <profile|system>
-  _HUSE_PREV="$(_huse_agents_target)"
-  _HUSE_SET="$(_huse_agents_dir "$1")"
-  _huse_switch_agents "$1" || return 1
-  trap '_huse_restore_agents "$_HUSE_SET" "$_HUSE_PREV"' EXIT
-  trap 'exit 129' HUP
-  trap 'exit 143' TERM
-}
-
-# ---- commands -------------------------------------------------------------------
-
-# Source dir for one tool in a profile, or in the real system config.
-_huse_src() {
-  local from="$1" tool="$2"
-  if [ "$from" != system ]; then
-    printf '%s/%s' "$(_huse_dir "$from")" "$tool"
-    return
-  fi
-  case "$tool" in
-    claude) printf '%s' "$HOME/.claude" ;;
-    codex)  printf '%s' "$HOME/.codex" ;;
-    pi)     printf '%s' "$HOME/.pi/agent" ;;
-    agents)
-      if [ -d "$AGENTS_SYSTEM" ]; then printf '%s' "$AGENTS_SYSTEM"
-      elif [ ! -L "$AGENTS_LINK" ]; then printf '%s' "$AGENTS_LINK"
-      fi ;;
-  esac
-}
+# ---- commands ------------------------------------------------------------------------
 
 _huse_new() {
   local name="${1:-}" from="" dir tool src
@@ -192,13 +94,14 @@ _huse_new() {
   dir="$(_huse_dir "$name")"
   [ -e "$dir" ] && { echo "huse: profile '$name' already exists" >&2; return 1; }
 
-  for tool in claude codex pi agents; do
+  for tool in $HARNESSES; do
     mkdir -p "$dir/$tool"
     [ -n "$from" ] || continue
-    src="$(_huse_src "$from" "$tool")"
-    { [ -n "$src" ] && [ -d "$src" ]; } || continue
+    src="$(_huse_part "$from" "$tool")"
+    [ -d "$src" ] || continue
     # Copy config only. Skip logins, sessions, history, logs and caches.
-    find "$src" -mindepth 1 -maxdepth 1 | while IFS= read -r entry; do
+    # Skill links stay links, so the copy uses the same skills of the store.
+    find -H "$src" -mindepth 1 -maxdepth 1 | while IFS= read -r entry; do
       case "${entry##*/}" in
         auth.json|.credentials.json|sessions|projects|history.jsonl|todos|\
         shell-snapshots|file-history|statsig|debug|log|logs|cache|*.sqlite*) continue ;;
@@ -219,43 +122,37 @@ _huse_use() {
     echo "huse: to run one command with '$name', use: huse run $name <command>" >&2
     return 1
   fi
-  _huse_require_setup || return 1
-  _huse_switch_agents_until_exit "$name" || return 1
   _huse_export_profile "$name" "$dir"
   export HUSE_SUBSHELL=1
-  echo "huse: new shell with '$name' (settings and ~/.agents). Type exit to go back." >&2
-  "${SHELL:-/bin/sh}"
+  echo "huse: new shell with '$name'. Type exit to go back." >&2
+  exec "${SHELL:-/bin/sh}"
 }
 
 _huse_off() {
   if [ -n "${HUSE_SUBSHELL:-}" ]; then
-    echo "huse: type exit to leave the '${HARNESS_PROFILE:-system}' shell. ~/.agents goes back when you exit."
-    return 0
-  fi
-  _huse_is_setup && { _huse_switch_agents system || return 1; }
-  if [ -n "${HARNESS_PROFILE:-}" ]; then
-    echo "huse: ~/.agents is back to your normal setup, but huse cannot change the settings of this shell." >&2
-    echo "huse: open a new shell, or add this line to ~/.zshrc:  eval \"\$(huse init)\"" >&2
+    echo "huse: type exit to leave the '${HARNESS_PROFILE:-system}' shell."
+  elif [ -n "${HARNESS_PROFILE:-}" ]; then
+    echo "huse: huse cannot change the settings of this shell. Open a new shell, or add this line to ~/.zshrc:" >&2
+    # shellcheck disable=SC2016  # the line is printed as is, for the user to copy
+    echo '  eval "$(huse init)"' >&2
     return 1
+  else
+    echo "huse: this shell uses your normal setup."
   fi
-  echo "huse: this shell uses your normal setup."
 }
 
-# For shell integration: switch ~/.agents, then print shell code for the current shell.
+# For shell integration: print shell code for the current shell.
 _huse_env() {
   local name="${1:-}" dir
   if [ "$name" = off ] || [ "$name" = system ]; then
-    if _huse_is_setup; then _huse_switch_agents system || return 1; fi
-    echo "unset HARNESS_PROFILE CLAUDE_CONFIG_DIR CODEX_HOME PI_CODING_AGENT_DIR"
-    echo "huse: this shell uses your normal setup (settings and ~/.agents)" >&2
+    echo 'unset HARNESS_PROFILE CLAUDE_CONFIG_DIR CODEX_HOME PI_CODING_AGENT_DIR'
+    echo "huse: this shell uses your normal setup" >&2
     return 0
   fi
   dir="$(_huse_profile "$name")" || return 1
-  _huse_require_setup || return 1
-  _huse_switch_agents "$name" || return 1
   printf 'export HARNESS_PROFILE=%q CLAUDE_CONFIG_DIR=%q CODEX_HOME=%q PI_CODING_AGENT_DIR=%q\n' \
     "$name" "$dir/claude" "$dir/codex" "$dir/pi"
-  echo "huse: this shell uses '$name' (settings and ~/.agents)" >&2
+  echo "huse: this shell uses '$name'" >&2
 }
 
 # Shell integration for bash and zsh.
@@ -274,67 +171,182 @@ EOF
 
 _huse_run() {
   [ $# -ge 2 ] || { echo "usage: huse run <profile> <command> [args...]" >&2; return 1; }
-  local name="$1" dir=""
+  local name="$1" dir
   shift
-  if [ "$name" != system ]; then
+  if [ "$name" = system ]; then
+    _huse_unset_profile
+  else
     dir="$(_huse_profile "$name")" || return 1
-    _huse_require_setup || return 1
+    _huse_export_profile "$name" "$dir"
   fi
-  if _huse_is_setup; then
-    _huse_switch_agents_until_exit "$name" || return 1
-    trap 'exit 130' INT
-  fi
-  if [ "$name" = system ]; then _huse_unset_profile; else _huse_export_profile "$name" "$dir"; fi
-  "$@"
+  exec "$@"
 }
 
 _huse_list() {
   [ -d "$HARNESS_ROOT/profiles" ] || { echo "huse: no profiles yet" >&2; return 0; }
-  local agents_t mark note d p
-  agents_t="$(_huse_agents_target)"
+  local d p
   for d in "$HARNESS_ROOT/profiles"/*/; do
     [ -d "$d" ] || continue
     p="${d%/}"; p="${p##*/}"
-    mark="  "; [ "$p" = "${HARNESS_PROFILE:-}" ] && mark="* "
-    note="";   [ "$agents_t" = "$HARNESS_ROOT/profiles/$p/agents" ] && note="   (~/.agents)"
-    echo "$mark$p$note"
+    if [ "$p" = "${HARNESS_PROFILE:-}" ]; then echo "* $p"; else echo "  $p"; fi
+  done
+}
+
+# Names of the entries in ~/.agents/skills. Codex and pi read them in every profile.
+_huse_global_skills() {
+  local e
+  for e in "$HOME/.agents/skills"/*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    printf '%s\n' "${e##*/}"
   done
 }
 
 _huse_status() {
-  local shell_p="${HARNESS_PROFILE:-system}" agents_p
+  local p="${HARNESS_PROFILE:-system}" n
   if [ -n "${HUSE_SUBSHELL:-}" ]; then
-    echo "shell profile:        $shell_p (a huse shell: type exit to leave)"
+    echo "shell profile:        $p (a huse shell: type exit to leave)"
   else
-    echo "shell profile:        $shell_p"
-  fi
-  if _huse_is_setup; then
-    agents_p="$(_huse_agents_name "$(_huse_agents_target)")"
-    # shellcheck disable=SC2088  # a literal ~ is intended in this label
-    echo "~/.agents profile:    $agents_p   (-> $(_huse_agents_target))"
-  else
-    agents_p=""
-    # shellcheck disable=SC2088
-    echo "~/.agents profile:    not managed yet (run: huse setup)"
+    echo "shell profile:        $p"
   fi
   echo "CLAUDE_CONFIG_DIR   = ${CLAUDE_CONFIG_DIR:-(unset, uses ~/.claude)}"
   echo "CODEX_HOME          = ${CODEX_HOME:-(unset, uses ~/.codex)}"
   echo "PI_CODING_AGENT_DIR = ${PI_CODING_AGENT_DIR:-(unset, uses ~/.pi/agent)}"
-  if [ -n "$agents_p" ] && [ "$agents_p" != "$shell_p" ]; then
-    echo "note: ~/.agents is on '$agents_p', not on this shell's profile. Another shell probably switched it."
+  n="$(_huse_global_skills | wc -l | tr -d ' ')"
+  if [ "$n" -gt 0 ]; then
+    # shellcheck disable=SC2088  # a literal ~ is intended in these messages
+    echo "WARNING: ~/.agents/skills has $n skills. Codex and pi read them in every profile."
+    echo "         To choose them per profile, move them to the store: huse setup"
+    echo "         Tools such as \`npx skills add -g\` install skills there."
   fi
+}
+
+# Make the links of one skill in the harness folders of a profile.
+# Sets _huse_added and _huse_had to the harnesses that got a new link or had one.
+_huse_link() {  # <profile> <skill> <harness>...
+  local p="$1" name="$2" h dir
+  shift 2
+  _huse_added="" _huse_had=""
+  for h in "$@"; do
+    dir="$(_huse_part "$p" "$h")/skills"
+    mkdir -p "$dir" || return 1
+    if [ -L "$dir/$name" ] && [ "$(readlink "$dir/$name")" = "$STORE/$name" ]; then
+      _huse_had="$_huse_had $h"
+      continue
+    fi
+    if [ -e "$dir/$name" ] || [ -L "$dir/$name" ]; then
+      echo "huse: $dir/$name already exists and is not a link to the store. Kept it." >&2
+      continue
+    fi
+    ln -s "$STORE/$name" "$dir/$name" && _huse_added="$_huse_added $h"
+  done
+}
+
+# Move the skills in ~/.agents/skills to the store. Link them into the normal setup
+# of Codex and pi, which read them before. Never delete a skill.
+_huse_setup() {
+  local src="$HOME/.agents/skills" name entry target moved=0
+  mkdir -p "$STORE" || return 1
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    entry="$src/$name"
+    if [ -e "$STORE/$name" ] || [ -L "$STORE/$name" ]; then
+      echo "huse: $STORE/$name already exists. Kept $entry. Move or rename one of them." >&2
+      continue
+    fi
+    if [ -L "$entry" ]; then
+      # A relative link breaks when it moves. Link to the real folder instead.
+      if ! target="$(cd "$entry" 2>/dev/null && pwd -P)"; then
+        echo "huse: $entry is a broken link. Kept it." >&2
+        continue
+      fi
+      ln -s "$target" "$STORE/$name" && rm -f "${entry:?}"
+    else
+      mv "$entry" "$STORE/$name"
+    fi || { echo "huse: could not move $entry" >&2; continue; }
+    _huse_link system "$name" codex pi
+    moved=$((moved + 1))
+  done <<EOF
+$(_huse_global_skills)
+EOF
+  if [ "$moved" -gt 0 ]; then
+    echo "huse: moved $moved skills to $STORE. Your normal setup of Codex and pi still uses them."
+  else
+    echo "huse: no skills to move. The store is $STORE."
+  fi
+}
+
+# Check <profile> <skill> [<harness>...] and print the harnesses, one on each line.
+_huse_skill_args() {
+  local p="${1:-}" name="${2:-}" h
+  [ -n "$name" ] || { echo "huse: give a profile and a skill (see: huse skill ls)" >&2; return 1; }
+  [ "$p" = system ] || _huse_profile "$p" >/dev/null || return 1
+  case "$name" in */*|.*) echo "huse: bad skill name '$name'" >&2; return 1 ;; esac
+  shift 2
+  # shellcheck disable=SC2086  # HARNESSES is a list of words
+  [ $# -gt 0 ] || set -- $HARNESSES
+  for h in "$@"; do
+    case " $HARNESSES " in
+      *" $h "*) printf '%s\n' "$h" ;;
+      *) echo "huse: harness must be claude, codex, or pi, not '$h'" >&2; return 1 ;;
+    esac
+  done
+}
+
+_huse_skill() {
+  local sub="${1:-ls}" p name hs h dir used
+  [ $# -gt 0 ] && shift
+  case "$sub" in
+    ls)
+      p="${1:-${HARNESS_PROFILE:-system}}"
+      [ "$p" = system ] || _huse_profile "$p" >/dev/null || return 1
+      for dir in "$STORE"/*; do
+        [ -e "$dir" ] || continue
+        name="${dir##*/}" used=""
+        for h in $HARNESSES; do
+          [ "$(readlink "$(_huse_part "$p" "$h")/skills/$name" 2>/dev/null)" = "$STORE/$name" ] && used="$used $h"
+        done
+        if [ -n "$used" ]; then printf '%s  (%s:%s)\n' "$name" "$p" "$used"; else printf '%s\n' "$name"; fi
+      done ;;
+    add)
+      hs="$(_huse_skill_args "$@")" || return 1
+      p="$1" name="$2"
+      [ -d "$STORE/$name" ] || { echo "huse: no skill '$name' in $STORE (see: huse skill ls)" >&2; return 1; }
+      # shellcheck disable=SC2086  # one harness name on each line
+      _huse_link "$p" "$name" $hs || return 1
+      [ -z "$_huse_added" ] || echo "huse: '$p' now uses $name in:$_huse_added"
+      [ -z "$_huse_had" ] || echo "huse: '$p' already used $name in:$_huse_had" ;;
+    rm)
+      hs="$(_huse_skill_args "$@")" || return 1
+      p="$1" name="$2"
+      local removed="" missing=""
+      for h in $hs; do
+        dir="$(_huse_part "$p" "$h")/skills"
+        # Remove only links to the store. Never delete a real skill.
+        if [ -L "$dir/$name" ] && [ "$(readlink "$dir/$name")" = "$STORE/$name" ]; then
+          rm -f "${dir:?}/${name:?}" && removed="$removed $h"
+        elif [ -e "$dir/$name" ]; then
+          echo "huse: $dir/$name is not a link to the store. Kept it." >&2
+        else
+          missing="$missing $h"
+        fi
+      done
+      [ -z "$removed" ] || echo "huse: '$p' no longer uses $name in:$removed"
+      [ -z "$missing" ] || echo "huse: '$p' did not use $name in:$missing" ;;
+    *) echo "usage: huse skill ls|add|rm (see: huse help)" >&2; return 1 ;;
+  esac
 }
 
 cmd="${1:-status}"
 [ $# -gt 0 ] && shift
 case "$cmd" in
-  setup)          _huse_setup ;;
   new)            _huse_new "$@" ;;
   use)            _huse_use "$@" ;;
   off)            _huse_off ;;
   run)            _huse_run "$@" ;;
   ls|list)        _huse_list ;;
   status)         _huse_status ;;
+  setup)          _huse_setup ;;
+  skill|skills)   _huse_skill "$@" ;;
   init)           _huse_init ;;
   __env)          _huse_env "$@" ;;
   -h|--help|help) _huse_help ;;

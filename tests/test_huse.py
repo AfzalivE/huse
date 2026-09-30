@@ -1,40 +1,49 @@
 import os
 import shutil
-import signal
 import subprocess
-import time
 
 import pytest
 
-from conftest import BIN, TEST_BASH, agents_target, huse
+from conftest import BIN, huse, seen
 
-# The user's login shell. On macOS this is zsh; `huse use` opens it, and the integration runs in it.
+# The user's login shell. On macOS this is zsh. `huse use` opens it, and the integration runs in it.
 SHELLS = [s for s in ("bash", "zsh") if shutil.which(s)]
+HARNESSES = ("claude", "codex", "pi")
 
 
 def profile(home, name):
     return home / ".harness" / "profiles" / name
 
 
+def store(home):
+    return home / ".harness" / "skills"
+
+
+def add_to_store(home, name):
+    d = store(home) / name
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(f"---\nname: {name}\n---\n")
+    return d
+
+
+def system_part(home, harness):
+    return home / {"claude": ".claude", "codex": ".codex", "pi": ".pi/agent"}[harness]
+
+
 @pytest.fixture
 def ready(home, env):
-    """huse is set up, with the profiles "tuned" (copy of system) and "lean" (empty)."""
-    huse("setup", env=env, check=True)
+    """The profiles "tuned" (copy of system) and "lean" (empty)."""
     huse("new", "tuned", "--from", "system", env=env, check=True)
     huse("new", "lean", env=env, check=True)
     return env
 
 
-def system_agents(home):
-    return str(home / ".harness" / "agents.system")
-
-
-# ---- help and errors ------------------------------------------------------------------
+# ---- help and errors ----------------------------------------------------------------
 
 
 def test_help_lists_all_commands(env):
     r = huse("help", env=env)
-    for cmd in ("setup", "new", "use", "off", "run", "ls", "status", "init"):
+    for cmd in ("new", "use", "off", "run", "ls", "status", "setup", "skill ls", "skill add", "skill rm", "init"):
         assert f"huse {cmd}" in r.stderr
 
 
@@ -42,53 +51,7 @@ def test_unknown_command_fails(env):
     assert huse("bogus", env=env).returncode == 1
 
 
-def test_use_and_run_need_setup(home, env):
-    huse("new", "lean", env=env, check=True)
-    for args in (("use", "lean"), ("run", "lean", "true")):
-        r = huse(*args, env=env)
-        assert r.returncode == 1
-        assert "huse setup" in r.stderr
-    assert (home / ".agents").is_dir() and not (home / ".agents").is_symlink()
-
-
-# ---- setup ----------------------------------------------------------------------------
-
-
-def test_setup_moves_real_folder_and_is_idempotent(home, env):
-    r = huse("setup", env=env, check=True)
-    assert "moved ~/.agents" in r.stdout
-    assert agents_target(home) == system_agents(home)
-    assert (home / ".agents/skills/orig/SKILL.md").exists()  # content still reachable
-    again = huse("setup", env=env, check=True)
-    assert "already set up" in again.stdout
-
-
-def test_setup_keeps_dotfiles_symlink(home, env, tmp_path):
-    dot = tmp_path / "dotfiles" / "agents"
-    dot.parent.mkdir(parents=True)
-    shutil.move(str(home / ".agents"), str(dot))
-    (home / ".agents").symlink_to(dot)
-    huse("setup", env=env, check=True)
-    assert os.readlink(system_agents(home)) == str(dot.resolve())
-    assert (home / ".agents/skills/orig/SKILL.md").exists()
-
-
-def test_setup_without_agents_makes_empty_folder(home, env):
-    shutil.rmtree(home / ".agents")
-    huse("setup", env=env, check=True)
-    assert os.path.isdir(system_agents(home))
-    assert agents_target(home) == system_agents(home)
-
-
-def test_setup_refuses_when_both_exist(home, env):
-    (home / ".harness/agents.system").mkdir(parents=True)
-    r = huse("setup", env=env)
-    assert r.returncode == 1
-    assert "Merge them by hand" in r.stderr
-    assert (home / ".agents").is_dir() and not (home / ".agents").is_symlink()
-
-
-# ---- new ------------------------------------------------------------------------------
+# ---- new --------------------------------------------------------------------------------
 
 
 def test_new_copies_config_but_not_logins_or_state(home, env):
@@ -104,13 +67,19 @@ def test_new_copies_config_but_not_logins_or_state(home, env):
     assert (p / "codex/config.toml").exists() and (p / "claude/settings.json").exists()
     for gone in ("codex/auth.json", "codex/sessions", "claude/.credentials.json", "claude/projects", "pi/auth.json"):
         assert not (p / gone).exists(), gone
-    assert (p / "agents/skills/orig/SKILL.md").exists()
+
+
+def test_new_keeps_skill_links_as_links(home, env):
+    add_to_store(home, "s1")
+    huse("skill", "add", "system", "s1", "codex", env=env, check=True)
+    huse("new", "p", "--from", "system", env=env, check=True)
+    link = profile(home, "p") / "codex/skills/s1"
+    assert link.is_symlink() and os.readlink(link) == str(store(home) / "s1")
 
 
 def test_new_empty_profile_has_all_parts(home, env):
     huse("new", "p", env=env, check=True)
-    for part in ("claude", "codex", "pi", "agents"):
-        assert (profile(home, "p") / part).is_dir()
+    assert sorted(x.name for x in profile(home, "p").iterdir()) == sorted(HARNESSES)
 
 
 @pytest.mark.parametrize("name", ["system", "off", "a/b", ".hidden"])
@@ -125,31 +94,55 @@ def test_new_fails_if_exists_or_source_missing(env):
     assert "no profile 'nope'" in huse("new", "q", "--from", "nope", env=env).stderr
 
 
-# ---- use (new shell) ------------------------------------------------------------------
+# ---- run -------------------------------------------------------------------------------------
+
+
+def test_codex_and_pi_in_a_profile_get_the_profile_folders(home, ready):
+    for tool in ("codex", "pi"):
+        out = seen(huse("run", "tuned", tool, "-p", "hi", env=ready, check=True).stdout)
+        assert out["TOOL"] == [tool]
+        assert out["CODEX_HOME"] == [str(profile(home, "tuned") / "codex")]
+        assert out["PI_DIR"] == [str(profile(home, "tuned") / "pi")]
+        assert out["HOME"] == [str(home)]  # huse does not change HOME
+        assert out["ARG"] == ["-p", "hi"]  # huse adds nothing
+
+
+def test_run_sets_the_profile_and_keeps_exit_code(home, ready):
+    r = huse("run", "lean", "sh", "-c", 'echo "$CLAUDE_CONFIG_DIR"; exit 7', env=ready)
+    assert r.returncode == 7
+    assert f"{profile(home, 'lean')}/claude" in r.stdout
+
+
+def test_run_system_unsets_profile_variables(ready):
+    e = dict(ready, CODEX_HOME="/x", CLAUDE_CONFIG_DIR="/y", PI_CODING_AGENT_DIR="/z", HARNESS_PROFILE="tuned")
+    script = 'echo "[${CODEX_HOME-unset}][${CLAUDE_CONFIG_DIR-unset}][${PI_CODING_AGENT_DIR-unset}]"'
+    r = huse("run", "system", "sh", "-c", script, env=e)
+    assert "[unset][unset][unset]" in r.stdout
+
+
+def test_two_profiles_do_not_mix(home, ready):
+    a = seen(huse("run", "tuned", "codex", env=ready, check=True).stdout)
+    b = seen(huse("run", "lean", "codex", env=ready, check=True).stdout)
+    assert a["CODEX_HOME"] == [str(profile(home, "tuned") / "codex")]
+    assert b["CODEX_HOME"] == [str(profile(home, "lean") / "codex")]
+
+
+# ---- use (new shell) ------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("shell", SHELLS)
-def test_use_opens_shell_and_restores_agents(home, ready, shell):
-    script = 'echo "P=$HARNESS_PROFILE C=$CODEX_HOME A=$(readlink ~/.agents)"; exit 3\n'
+def test_use_opens_a_shell_with_the_profile(home, ready, shell):
+    script = 'echo "P=$HARNESS_PROFILE C=$CODEX_HOME H=$HOME"; exit 3\n'
     r = huse("use", "tuned", env=dict(ready, SHELL=shutil.which(shell)), input=script)
     assert r.returncode == 3  # the exit code of the shell
-    p = profile(home, "tuned")
-    assert f"P=tuned C={p}/codex A={p}/agents" in r.stdout
-    assert agents_target(home) == system_agents(home)
+    assert f"P=tuned C={profile(home, 'tuned')}/codex H={home}" in r.stdout
 
 
 @pytest.mark.parametrize("shell", SHELLS)
-def test_use_in_a_huse_shell_is_refused(home, ready, shell):
+def test_use_in_a_huse_shell_is_refused(ready, shell):
     r = huse("use", "tuned", env=dict(ready, SHELL=shutil.which(shell)), input="huse use lean; echo rc=$?; exit\n")
     assert "rc=1" in r.stdout
     assert "already a huse shell" in r.stderr
-
-
-def test_restore_is_skipped_if_another_shell_changed_agents(home, ready):
-    lean = profile(home, "lean") / "agents"
-    r = huse("use", "tuned", env=ready, input=f'ln -sfn "{lean}" ~/.agents; exit\n')
-    assert r.returncode == 0
-    assert agents_target(home) == str(lean)
 
 
 def test_use_unknown_profile(ready):
@@ -157,60 +150,19 @@ def test_use_unknown_profile(ready):
     assert r.returncode == 1 and "no profile 'nope'" in r.stderr
 
 
-def test_hangup_restores_agents(home, ready):
-    p = subprocess.Popen(
-        [TEST_BASH, str(BIN / "huse"), "use", "lean"],
-        env=ready,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    p.stdin.write("sleep 2; exit\n")
-    p.stdin.flush()
-    deadline = time.time() + 5
-    while agents_target(home) == system_agents(home) and time.time() < deadline:
-        time.sleep(0.05)
-    assert agents_target(home).endswith("/lean/agents")
-    p.send_signal(signal.SIGHUP)
-    p.communicate(timeout=15)
-    assert p.returncode == 129
-    assert agents_target(home) == system_agents(home)
-
-
-# ---- run --------------------------------------------------------------------------------
-
-
-def test_run_switches_restores_and_keeps_exit_code(home, ready):
-    r = huse("run", "lean", "sh", "-c", 'echo "$CODEX_HOME $(readlink "$HOME/.agents")"; exit 7', env=ready)
-    assert r.returncode == 7
-    p = profile(home, "lean")
-    assert f"{p}/codex {p}/agents" in r.stdout
-    assert agents_target(home) == system_agents(home)
-
-
-def test_run_inside_huse_shell_restores_to_that_profile(home, ready):
-    r = huse("use", "tuned", env=ready, input='huse run lean true; echo "A=$(readlink ~/.agents)"; exit\n')
-    assert f"A={profile(home, 'tuned')}/agents" in r.stdout
-
-
-def test_run_system_unsets_profile_variables(ready):
-    e = dict(ready, CODEX_HOME="/x", CLAUDE_CONFIG_DIR="/y", HARNESS_PROFILE="tuned")
-    r = huse("run", "system", "sh", "-c", 'echo "[${CODEX_HOME-unset}][${CLAUDE_CONFIG_DIR-unset}]"', env=e)
-    assert "[unset][unset]" in r.stdout
-
-
-# ---- shell integration ------------------------------------------------------------------
+# ---- shell integration ------------------------------------------------------------------------
 
 
 def test_env_prints_only_shell_code(home, ready):
     r = huse("__env", "tuned", env=ready, check=True)
     lines = r.stdout.splitlines()
     assert len(lines) == 1 and lines[0].startswith("export ")
+    assert "HOME=" not in r.stdout.replace("CODEX_HOME=", "")
     assert "huse:" in r.stderr
     # The path has a space. The quoting must survive eval.
-    out = subprocess.run(["bash", "-c", r.stdout + 'printf "%s" "$CODEX_HOME"'], capture_output=True, text=True).stdout
-    assert out == f"{profile(home, 'tuned')}/codex"
+    script = r.stdout + 'printf "%s|%s" "$CODEX_HOME" "$PI_CODING_AGENT_DIR"'
+    out = subprocess.run(["bash", "-c", script], capture_output=True, text=True).stdout
+    assert out == f"{profile(home, 'tuned')}/codex|{profile(home, 'tuned')}/pi"
 
 
 def test_env_error_prints_nothing_on_stdout(ready):
@@ -225,52 +177,183 @@ def test_env_off_unsets_and_never_sets_defaults(ready):
 
 
 @pytest.mark.parametrize("shell", SHELLS)
-def test_integration_changes_current_shell(home, ready, shell):
+def test_integration_changes_the_current_shell(home, ready, shell):
     script = (
-        'eval "$(huse init)"; huse use tuned; echo "C=$CODEX_HOME A=$(readlink ~/.agents)"; '
-        'huse off; echo "C=${CODEX_HOME:-unset} A=$(readlink ~/.agents)"'
+        'eval "$(huse init)"; huse use tuned; huse use lean; huse use tuned; '
+        'echo "C=$CODEX_HOME H=$HOME"; '
+        'huse off; echo "C=${CODEX_HOME:-unset} H=$HOME"'
     )
     r = subprocess.run([shell, "-c", script], env=ready, capture_output=True, text=True, timeout=30)
-    p = profile(home, "tuned")
-    assert f"C={p}/codex A={p}/agents" in r.stdout
-    assert f"C=unset A={system_agents(home)}" in r.stdout
+    assert f"C={profile(home, 'tuned')}/codex H={home}" in r.stdout
+    assert f"C=unset H={home}" in r.stdout
 
 
 @pytest.mark.parametrize("shell", SHELLS)
-def test_integration_bad_profile_changes_nothing(home, ready, shell):
+def test_integration_bad_profile_changes_nothing(ready, shell):
     script = 'eval "$(huse init)"; huse use nope; echo "rc=$? C=${CODEX_HOME:-unset}"'
     r = subprocess.run([shell, "-c", script], env=ready, capture_output=True, text=True, timeout=30)
     assert "rc=1 C=unset" in r.stdout
-    assert agents_target(home) == system_agents(home)
 
 
-# ---- off, ls, status --------------------------------------------------------------------
+# ---- setup: move ~/.agents/skills to the store ----------------------------------------------
 
 
-def test_off_outside_huse_shell_resets_agents(home, ready):
-    os.remove(home / ".agents")
-    (home / ".agents").symlink_to(profile(home, "lean") / "agents")
+def test_setup_moves_global_skills_and_keeps_codex_and_pi_using_them(home, env):
+    huse("setup", env=env, check=True)
+    assert list((home / ".agents/skills").iterdir()) == []
+    assert (store(home) / "orig/SKILL.md").exists()
+    for h in ("codex", "pi"):
+        assert os.readlink(system_part(home, h) / "skills/orig") == str(store(home) / "orig")
+    assert not (home / ".claude/skills/orig").exists()  # Claude did not read ~/.agents before
+
+
+def test_setup_follows_a_symlinked_agents_folder(home, env, tmp_path):
+    dot = tmp_path / "dotfiles-agents"
+    shutil.move(str(home / ".agents"), str(dot))
+    (home / ".agents").symlink_to(dot)
+    huse("setup", env=env, check=True)
+    assert (store(home) / "orig/SKILL.md").exists()
+    assert (home / ".agents").is_symlink()
+
+
+def test_setup_makes_a_relative_skill_link_absolute(home, env, tmp_path):
+    real = home / "my-skills/rel"
+    real.mkdir(parents=True)
+    (real / "SKILL.md").write_text("---\n")
+    (home / ".agents/skills/rel").symlink_to("../../my-skills/rel")
+    huse("setup", env=env, check=True)
+    assert os.readlink(store(home) / "rel") == str(real.resolve())
+    assert (store(home) / "rel/SKILL.md").exists()
+
+
+def test_setup_never_overwrites_the_store(home, env):
+    add_to_store(home, "orig")
+    r = huse("setup", env=env, check=True)
+    assert "already exists" in r.stderr
+    assert (home / ".agents/skills/orig/SKILL.md").exists()
+
+
+def test_setup_twice_is_harmless(home, env):
+    huse("setup", env=env, check=True)
+    assert "no skills to move" in huse("setup", env=env, check=True).stdout
+
+
+# ---- skill ls, add, rm ------------------------------------------------------------------------
+
+
+def test_skill_add_links_all_harnesses_by_default(home, ready):
+    add_to_store(home, "s1")
+    huse("skill", "add", "tuned", "s1", env=ready, check=True)
+    for h in HARNESSES:
+        assert os.readlink(profile(home, "tuned") / h / "skills/s1") == str(store(home) / "s1")
+    assert not (profile(home, "lean") / "codex/skills/s1").exists()
+
+
+def test_skill_add_and_rm_for_one_harness(home, ready):
+    add_to_store(home, "s1")
+    huse("skill", "add", "tuned", "s1", "codex", "pi", env=ready, check=True)
+    assert not (profile(home, "tuned") / "claude/skills/s1").exists()
+    huse("skill", "rm", "tuned", "s1", "pi", env=ready, check=True)
+    assert (profile(home, "tuned") / "codex/skills/s1").is_symlink()
+    assert not (profile(home, "tuned") / "pi/skills/s1").exists()
+    assert (store(home) / "s1/SKILL.md").exists()  # rm never touches the store
+
+
+def test_skill_add_and_rm_say_what_they_did(home, ready):
+    add_to_store(home, "s1")
+    r = huse("skill", "add", "tuned", "s1", "codex", "pi", env=ready, check=True)
+    assert r.stdout == "huse: 'tuned' now uses s1 in: codex pi\n"
+    r = huse("skill", "add", "tuned", "s1", env=ready, check=True)
+    assert r.stdout == "huse: 'tuned' now uses s1 in: claude\nhuse: 'tuned' already used s1 in: codex pi\n"
+    r = huse("skill", "rm", "tuned", "s1", "pi", env=ready, check=True)
+    assert r.stdout == "huse: 'tuned' no longer uses s1 in: pi\n"
+    r = huse("skill", "rm", "tuned", "s1", "pi", env=ready, check=True)
+    assert r.stdout == "huse: 'tuned' did not use s1 in: pi\n"
+
+
+def test_skill_ls_shows_where_a_profile_uses_each_skill(home, ready):
+    add_to_store(home, "a")
+    add_to_store(home, "b")
+    huse("skill", "add", "tuned", "a", "codex", env=ready, check=True)
+    assert huse("skill", "ls", "tuned", env=ready, check=True).stdout.splitlines() == ["a  (tuned: codex)", "b"]
+
+
+def test_skill_ls_uses_the_profile_of_this_shell(home, ready):
+    add_to_store(home, "a")
+    huse("skill", "add", "lean", "a", "pi", env=ready, check=True)
+    out = huse("skill", "ls", env=dict(ready, HARNESS_PROFILE="lean"), check=True).stdout
+    assert out.splitlines() == ["a  (lean: pi)"]
+
+
+def test_skill_rm_keeps_a_real_skill_folder(home, ready):
+    real = profile(home, "tuned") / "codex/skills/mine"
+    real.mkdir(parents=True)
+    r = huse("skill", "rm", "tuned", "mine", "codex", env=ready, check=True)
+    assert "not a link to the store" in r.stderr and real.is_dir()
+
+
+def test_skill_add_keeps_an_existing_folder(home, ready):
+    add_to_store(home, "s1")
+    real = profile(home, "tuned") / "codex/skills/s1"
+    real.mkdir(parents=True)
+    r = huse("skill", "add", "tuned", "s1", "codex", env=ready, check=True)
+    assert "not a link to the store" in r.stderr and not real.is_symlink()
+
+
+@pytest.mark.parametrize(
+    ("args", "error"),
+    [
+        (("add", "tuned", "nope"), "no skill 'nope'"),
+        (("add", "nope", "s1"), "no profile 'nope'"),
+        (("add", "tuned", "s1", "cursor"), "harness must be"),
+        (("add", "tuned", "../x"), "bad skill name"),
+        (("add", "tuned"), "give a profile and a skill"),
+        (("bogus",), "usage"),
+    ],
+)
+def test_skill_errors(home, ready, args, error):
+    add_to_store(home, "s1")
+    r = huse("skill", *args, env=ready)
+    assert r.returncode == 1 and error in r.stderr
+
+
+def test_skill_add_for_system(home, env):
+    add_to_store(home, "s1")
+    huse("skill", "add", "system", "s1", "claude", env=env, check=True)
+    assert os.readlink(home / ".claude/skills/s1") == str(store(home) / "s1")
+
+
+# ---- off, ls, status ---------------------------------------------------------------------------
+
+
+def test_off_outside_huse_shell_with_a_profile(ready):
     r = huse("off", env=dict(ready, HARNESS_PROFILE="lean"))
-    assert r.returncode == 1 and "huse init" in r.stderr  # cannot change this shell
-    assert agents_target(home) == system_agents(home)
+    assert r.returncode == 1 and "huse init" in r.stderr
 
 
-def test_note_when_another_shell_had_agents(home, ready):
-    os.remove(home / ".agents")
-    (home / ".agents").symlink_to(profile(home, "lean") / "agents")
-    r = huse("run", "tuned", "true", env=ready)
-    assert "probably from another shell" in r.stderr
-
-
-def test_ls_marks_shell_profile_and_agents_owner(home, ready):
-    os.remove(home / ".agents")
-    (home / ".agents").symlink_to(profile(home, "lean") / "agents")
+def test_ls_marks_the_profile_of_this_shell(ready):
     out = huse("ls", env=dict(ready, HARNESS_PROFILE="tuned"), check=True).stdout.splitlines()
-    assert "  lean   (~/.agents)" in out
-    assert "* tuned" in out
+    assert out == ["  lean", "* tuned"]
 
 
-def test_status_notes_mismatch(home, ready):
-    out = huse("status", env=dict(ready, HARNESS_PROFILE="tuned"), check=True).stdout
-    assert "~/.agents profile:    system" in out
-    assert "Another shell probably switched it" in out
+def test_status_shows_the_profile(home, ready):
+    e = dict(ready, HARNESS_PROFILE="tuned", CODEX_HOME=str(profile(home, "tuned") / "codex"))
+    out = huse("status", env=e, check=True).stdout
+    assert "shell profile:        tuned" in out
+    assert f"CODEX_HOME          = {profile(home, 'tuned')}/codex" in out
+
+
+def test_status_warns_about_skills_in_the_global_folder(home, ready):
+    out = huse("status", env=ready, check=True).stdout
+    assert "WARNING: ~/.agents/skills has 1 skills" in out and "huse setup" in out
+    huse("setup", env=ready, check=True)
+    assert "WARNING" not in huse("status", env=ready, check=True).stdout
+
+
+def test_huse_works_through_a_symlink(home, ready, tmp_path):
+    link = tmp_path / "linkbin"
+    link.mkdir()
+    (link / "huse").symlink_to(BIN / "huse")
+    e = dict(ready, PATH=str(link) + os.pathsep + ready["PATH"])
+    r = subprocess.run(["huse", "__env", "tuned"], env=e, capture_output=True, text=True)
+    assert "CODEX_HOME=" in r.stdout and r.returncode == 0

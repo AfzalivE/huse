@@ -39,6 +39,31 @@ def test_limit_message_in_agent_log_does_not_count(tmp_path):
     assert t["status"] == "excluded" and "usage limit" in t["reason"]
 
 
+LOGIN_ERRORS = [
+    "Error: No API key found for openai-codex.",
+    "Your refresh token was already used. Please log out and sign in again.",
+    '{"error": {"code": "token_invalidated"}}',
+]
+
+
+@pytest.mark.parametrize("line", LOGIN_ERRORS)
+def test_login_error_in_agent_log_does_not_count(tmp_path, line):
+    # A login that breaks during the run is not the agent's fault. `heval resume` runs it again.
+    t = trial(tmp_path, reward=0, exc="NonZeroAgentExitCodeError", msg="exit 1", log=f"...\n{line}\n")
+    assert t["status"] == "excluded" and "login error" in t["reason"]
+
+
+@pytest.mark.parametrize("line", LOGIN_ERRORS)
+def test_login_error_in_exception_message_does_not_count(tmp_path, line):
+    t = trial(tmp_path, reward=0, exc="NonZeroAgentExitCodeError", msg=line)
+    assert t["status"] == "excluded" and "login error" in t["reason"]
+
+
+def test_login_text_without_an_error_still_counts(tmp_path):
+    t = trial(tmp_path, reward=1, log="fixed the bug: No API key found in the config\n")
+    assert t["status"] == "ok"
+
+
 def test_real_agent_failure_counts(tmp_path):
     t = trial(tmp_path, reward=0, exc="NonZeroAgentExitCodeError", msg="exit 1", log="error: build failed\n")
     assert t["status"] == "ok" and t["reward"] == 0
@@ -142,6 +167,39 @@ def test_excluded_trials_are_reported(tmp_path):
         text=True,
     )
     assert "1 trials are not counted: ApiUsageLimitError x1" in r.stdout
+
+
+# ---- oracle failures ----------------------------------------------------------------------
+
+
+def oracle_failures(job):
+    return subprocess.run(
+        [sys.executable, str(LIB / "harbor_compare.py"), "--oracle-failures", str(job)],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_oracle_failures_prints_failed_tasks_for_exclude_tasks(tmp_path):
+    job = make_job(tmp_path / "job", {"good": [1], "bad-b": [0], "bad-a": [0.5], "flaky": [1, 0]})
+    r = oracle_failures(job)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines() == ['  "bad-a"', '  "bad-b"', '  "flaky"']
+    assert "3 tasks failed the oracle run" in r.stderr and "EXCLUDE_TASKS" in r.stderr
+
+
+def test_oracle_failures_lists_errors_apart(tmp_path):
+    job = make_job(tmp_path / "job", {"good": [1]})
+    make_trial(job, "broken", "no-env", exc="EnvironmentStartTimeoutError")
+    r = oracle_failures(job)
+    assert r.stdout == ""
+    assert "no-env" in r.stderr and "EnvironmentStartTimeoutError" in r.stderr
+
+
+def test_oracle_failures_when_all_pass(tmp_path):
+    r = oracle_failures(make_job(tmp_path / "job", {"a": [1], "b": [1]}))
+    assert r.returncode == 0 and r.stdout == ""
+    assert "all 2 tasks passed" in r.stderr
 
 
 # ---- prune --------------------------------------------------------------------------------

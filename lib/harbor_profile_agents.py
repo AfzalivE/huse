@@ -64,5 +64,8 @@ class PiProfile(Pi):
         await super().setup(environment)
         if src := _file_from_env(self, "PI_AUTH_JSON_PATH"):
             await _put_file(self, environment, src, "$HOME/.pi/agent", "auth.json")
+        elif (self.model_name or "").startswith("openai-codex/"):
+            # Fail the setup: then the trial is an error, not a graded failure.
+            raise RuntimeError("pi needs a subscription login for openai-codex: set PI_AUTH_JSON_PATH")
         if src := _file_from_env(self, "HARNESS_INSTRUCTIONS"):
             await _put_file(self, environment, src, "$HOME/.pi/agent", "AGENTS.md")

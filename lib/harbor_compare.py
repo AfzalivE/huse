@@ -3,10 +3,11 @@
 
   python3 harbor_compare.py --base jobs/A1 jobs/A2 --new jobs/B1
   python3 harbor_compare.py --prune jobs/B1      # move errored trials out, for `harbor jobs resume`
+  python3 harbor_compare.py --oracle-failures jobs/O1  # tasks that failed the oracle run
 
 A trial counts only when the verifier gave a reward. Trials that stopped on a usage
-limit, a rate limit, an API outage, or a setup error do not count. They are listed so
-that you can run them again.
+limit, a rate limit, a login error, an API outage, or a setup error do not count. They
+are listed so that you can run them again.
 """
 
 import argparse
@@ -36,6 +37,9 @@ LIMIT_RE = re.compile(
     r"out of extra usage|credit balance|resets? (at|in) \d",
     re.I,
 )
+# Login errors in the middle of a run: a missing login, or a subscription login that
+# another process refreshed first. Harbor reports them only as a non-zero exit.
+LOGIN_RE = re.compile(r"no api key found|refresh token was already used|token_invalidated", re.I)
 
 
 def load_trial(tdir: Path):
@@ -60,8 +64,10 @@ def load_trial(tdir: Path):
     status, reason = "ok", None
     if etype in INFRA_TYPES:
         status, reason = "excluded", etype
-    elif etype and _looks_like_limit(tdir, emsg):
+    elif etype and _agent_says(tdir, emsg, LIMIT_RE):
         status, reason = "excluded", f"{etype} (looks like a usage limit)"
+    elif etype and _agent_says(tdir, emsg, LOGIN_RE):
+        status, reason = "excluded", f"{etype} (looks like a login error)"
     elif reward is None:
         status, reason = "excluded", etype or "no reward"
 
@@ -81,8 +87,9 @@ def load_trial(tdir: Path):
     }
 
 
-def _looks_like_limit(tdir: Path, message: str) -> bool:
-    if LIMIT_RE.search(message):
+def _agent_says(tdir: Path, message: str, pattern: re.Pattern) -> bool:
+    """True if the error message or the end of an agent log matches the pattern."""
+    if pattern.search(message):
         return True
     agent_dir = tdir / "agent"
     if agent_dir.is_dir():
@@ -90,7 +97,7 @@ def _looks_like_limit(tdir: Path, message: str) -> bool:
             try:
                 with open(f, "rb") as fh:
                     fh.seek(max(0, f.stat().st_size - 4000))
-                    if LIMIT_RE.search(fh.read().decode("utf-8", "replace")):
+                    if pattern.search(fh.read().decode("utf-8", "replace")):
                         return True
             except OSError:
                 pass
@@ -205,6 +212,26 @@ def prune(dirs):
         print(f"{d}: moved {moved} trials to {dest}" if moved else f"{d}: nothing to move")
 
 
+def oracle_failures(job):
+    """Print the tasks that failed the oracle run, one per line, for EXCLUDE_TASKS."""
+    trials = load_jobs([job])
+    failed = sorted({t["task"] for t in trials if t["status"] == "ok" and t["reward"] < 1})
+    errors = sorted({(t["task"], t["reason"]) for t in trials if t["status"] == "excluded"})
+    for task in failed:
+        print(f'  "{task}"')
+    if failed:
+        print(
+            f"heval: {len(failed)} tasks failed the oracle run. Add the lines above to EXCLUDE_TASKS in eval.conf.",
+            file=sys.stderr,
+        )
+    if errors:
+        print(f"heval: {len(errors)} tasks stopped on an error. Run heval check again:", file=sys.stderr)
+        for task, reason in errors:
+            print(f"heval:   {task}: {reason}", file=sys.stderr)
+    if not failed and not errors:
+        print(f"heval: all {len({t['task'] for t in trials})} tasks passed the oracle run.", file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--base", nargs="+", help="job folders of the baseline profile")
@@ -212,13 +239,16 @@ def main():
     ap.add_argument("--base-label", default="")
     ap.add_argument("--new-label", default="")
     ap.add_argument("--prune", nargs="+", metavar="JOB", help="move not-counted trials out of these jobs")
+    ap.add_argument("--oracle-failures", metavar="JOB", help="print the tasks that failed this oracle job")
     a = ap.parse_args()
-    if a.prune:
+    if a.oracle_failures:
+        oracle_failures(a.oracle_failures)
+    elif a.prune:
         prune(a.prune)
     elif a.base and a.new:
         compare(a)
     else:
-        ap.error("give --base and --new, or --prune")
+        ap.error("give --base and --new, --prune, or --oracle-failures")
 
 
 if __name__ == "__main__":

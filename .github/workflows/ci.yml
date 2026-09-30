@@ -12,6 +12,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y zsh
       - run: pip install pytest ruff shellcheck-py
       - run: make lint
 
@@ -30,6 +31,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y zsh
       - run: pip install pytest
       - run: make test
+      # huse and heval are bash scripts, so on a stock Mac they run with /bin/bash (Bash 3.2),
+      # even when the login shell is zsh. The zsh parts (the new shell of `huse use` and
+      # `huse init`) are tested in both steps, because macOS has /bin/zsh.
       - name: Tests with Bash 3.2 (the macOS /bin/bash)
         if: runner.os == 'macOS'
         run: make test-bash32
@@ -43,3 +47,19 @@ jobs:
           python-version: "3.12"
       - run: pip install pytest "harbor==0.23.0"
       - run: make test-harbor
+
+  # huse depends on how Codex and pi find ~/.agents/skills. This job uses their newest
+  # versions, so a change there shows up here.
+  agents:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install -g @openai/codex @earendil-works/pi-coding-agent
+      - run: pip install pytest
+      - run: make test-agents

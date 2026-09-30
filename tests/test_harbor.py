@@ -113,6 +113,17 @@ def test_dangling_symlink_is_an_error(tmp_path):
         run_setup(hpa.CodexProfile, Codex, "openai/x", tmp_path, extra_env)
 
 
+def test_pi_subscription_model_without_login_fails_in_setup(tmp_path):
+    # Without this, pi starts, prints "No API key found for openai-codex", and the verifier
+    # grades the empty result as a normal failure.
+    with pytest.raises(RuntimeError, match="PI_AUTH_JSON_PATH"):
+        run_setup(hpa.PiProfile, Pi, "openai-codex/x", tmp_path, {})
+
+
+def test_pi_api_key_model_without_login_is_fine(tmp_path):
+    assert run_setup(hpa.PiProfile, Pi, "openrouter/x", tmp_path, {}) == []
+
+
 def test_nothing_happens_without_variables(tmp_path):
     assert run_setup(hpa.CodexProfile, Codex, "openai/x", tmp_path, {}) == []
 

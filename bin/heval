@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # heval - run Harbor benchmark suites against harness profiles made with huse.
 #
-#   heval check                          run the oracle agent: every task must pass here
+#   heval check                          run the oracle agent: every task must pass here.
+#                                        Prints the failed tasks for EXCLUDE_TASKS
 #   heval run <claude|codex|pi> <profile> [extra harbor args, e.g. --dry-run]
 #   heval compare <claude|codex|pi> <base-profile> <new-profile>
 #   heval resume <job>                   run again the trials that stopped on limits or errors
@@ -67,7 +68,7 @@ export PYTHONPATH="$HEVAL_LIB${PYTHONPATH:+:$PYTHONPATH}"
 
 die() { echo "heval: $*" >&2; exit 1; }
 
-# Directory of one part (claude|codex|pi|agents) of a profile.
+# Config folder of one harness (claude|codex|pi) of a profile.
 part_dir() {
   local p="$1" part="$2"
   if [ "$p" = system ]; then
@@ -75,8 +76,6 @@ part_dir() {
       claude) echo "$HOME/.claude" ;;
       codex)  echo "$HOME/.codex" ;;
       pi)     echo "$HOME/.pi/agent" ;;
-      agents) if [ -d "$HARNESS_ROOT/agents.system" ]; then echo "$HARNESS_ROOT/agents.system"
-              else echo "$HOME/.agents"; fi ;;
     esac
   else
     [ -d "$HARNESS_ROOT/profiles/$p" ] || die "no profile '$p' (see: huse ls)"
@@ -90,31 +89,64 @@ need_dataset() {
   esac
 }
 
+# Stop before the job starts if the harness has no login. Without a login, every trial
+# fails at once, and the verifier grades the empty result like a real agent failure.
+need_file() {  # <variable name> <path>
+  [ -f "$2" ] || die "$1 points to a missing file: $2"
+}
+
+check_login() {  # <harness> <model>
+  [ -n "${HEVAL_SKIP_LOGIN_CHECK:-}" ] && return 0
+  case "$1" in
+    claude)
+      [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ] ||
+        die "no Claude login: set CLAUDE_CODE_OAUTH_TOKEN in $HEVAL_ENV (see docs/heval.md)"
+      ;;
+    codex)
+      if [ -n "${CODEX_AUTH_JSON_PATH:-}" ]; then
+        need_file CODEX_AUTH_JSON_PATH "$CODEX_AUTH_JSON_PATH"
+      elif [ -z "${CODEX_FORCE_AUTH_JSON:-}${OPENAI_API_KEY:-}" ]; then
+        die "no Codex login: set CODEX_AUTH_JSON_PATH in $HEVAL_ENV (see docs/heval.md)"
+      fi
+      ;;
+    pi)
+      # Only the subscription provider needs a login file. API-key providers use their variable.
+      case "$2" in openai-codex/*)
+        [ -n "${PI_AUTH_JSON_PATH:-}" ] ||
+          die "no pi login: set PI_AUTH_JSON_PATH in $HEVAL_ENV (see docs/heval.md)"
+        need_file PI_AUTH_JSON_PATH "$PI_AUTH_JSON_PATH"
+        grep -q '"openai-codex"' "$PI_AUTH_JSON_PATH" ||
+          echo "heval: WARNING: $PI_AUTH_JSON_PATH has no openai-codex login. Log in again: PI_CODING_AGENT_DIR=$(dirname "$PI_AUTH_JSON_PATH") pi, then /login" >&2
+        ;;
+      esac
+      ;;
+  esac
+}
+
 first_file() { local f; for f in "$@"; do [ -f "$f" ] && { echo "$f"; return 0; }; done; return 0; }
 has_skills() { compgen -G "$1/*/SKILL.md" >/dev/null 2>&1; }
-real_dir() { (cd "$1" 2>/dev/null && pwd -P); }
 suite_tag() { printf '%s' "$DATASET" | tr '/@:' '---' | tr -cd 'A-Za-z0-9._-'; }
 
 cmd_run() {
   [ $# -ge 2 ] || die "usage: heval run <claude|codex|pi> <profile> [harbor args...]"
   local h="$1" p="$2"; shift 2
-  local own agents agent model instr cfg=""
+  local own agent model instr cfg=""
   own="$(part_dir "$p" "$h")"
-  agents="$(part_dir "$p" agents)"
   local version=""
   case "$h" in
     claude) agent=ClaudeCodeProfile; model="$CLAUDE_MODEL"; version="${CLAUDE_VERSION:-}"
-            instr="$(first_file "$own/CLAUDE.md" "$agents/AGENTS.md")"
+            instr="$(first_file "$own/CLAUDE.md")"
             cfg="$(first_file "$own/eval-settings.json")" ;;
     codex)  agent=CodexProfile; model="$CODEX_MODEL"; version="${CODEX_VERSION:-}"
-            instr="$(first_file "$own/AGENTS.md" "$agents/AGENTS.md")"
+            instr="$(first_file "$own/AGENTS.md")"
             cfg="$(first_file "$own/eval-config.toml")" ;;
     pi)     agent=PiProfile; model="$PI_MODEL"; version="${PI_VERSION:-}"
-            instr="$(first_file "$own/AGENTS.md" "$agents/AGENTS.md")" ;;
+            instr="$(first_file "$own/AGENTS.md")" ;;
     *) die "harness must be claude, codex, or pi" ;;
   esac
   need_dataset
   case "$model" in *"<"*|"") die "set the ${h} model in $HEVAL_CONF" ;; esac
+  check_login "$h" "$model"
 
   local name; name="$(suite_tag)__${h}__${p}__$(date +%Y%m%d-%H%M%S)"
   local args=(-d "$DATASET" -k "$ATTEMPTS" -n "$CONCURRENCY" -e "$ENV_TYPE"
@@ -124,9 +156,11 @@ cmd_run() {
   local x; for x in "${EXCLUDE_TASKS[@]+"${EXCLUDE_TASKS[@]}"}"; do args+=(-x "$x"); done
 
   local skills=()
-  has_skills "$agents/skills" && skills+=("$agents/skills")
-  if has_skills "$own/skills" && [ "$(real_dir "$own/skills")" != "$(real_dir "$agents/skills")" ]; then
-    skills+=("$own/skills")
+  has_skills "$own/skills" && skills+=("$own/skills")
+  # Codex and pi also read ~/.agents/skills in every profile, so the run gets them too.
+  if [ "$h" != claude ] && has_skills "$HOME/.agents/skills"; then
+    skills+=("$HOME/.agents/skills")
+    echo "heval: note: $h reads ~/.agents/skills in every profile. The run uses them too. See: huse setup" >&2
   fi
   local s; for s in "${skills[@]+"${skills[@]}"}"; do args+=(--skill "$s"); done
   [ -n "$cfg" ] && args+=(--ak "config=$cfg")
@@ -177,11 +211,18 @@ cmd_resume() {
 
 cmd_check() {
   need_dataset
+  local name; name="$(suite_tag)__oracle__$(date +%Y%m%d-%H%M%S)"
   local args=(-d "$DATASET" -a oracle -e "$ENV_TYPE" -n "$CONCURRENCY" -o "$JOBS_DIR"
-              --job-name "$(suite_tag)__oracle__$(date +%Y%m%d-%H%M%S)" -y)
+              --job-name "$name" -y)
   [ -n "${N_TASKS:-}" ] && args+=(-l "$N_TASKS")
   local x; for x in "${EXCLUDE_TASKS[@]+"${EXCLUDE_TASKS[@]}"}"; do args+=(-x "$x"); done
-  exec harbor run "${args[@]}" "$@"
+  local rc=0
+  harbor run "${args[@]}" "$@" || rc=$?
+  # A dry run makes no job. Print the failed tasks also when harbor exits non-zero.
+  if [ -f "$JOBS_DIR/$name/config.json" ]; then
+    python3 "$HEVAL_LIB/harbor_compare.py" --oracle-failures "$JOBS_DIR/$name" || true
+  fi
+  return "$rc"
 }
 
 case "${1:-}" in
